@@ -7,7 +7,7 @@ split: test1k
 sample: full
 max_samples: null
 
-model_path: weight/medgemma-4b-pt
+model_path: weight/medgemma-4b-it
 output_root: results
 
 device: auto

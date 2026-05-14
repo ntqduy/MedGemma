@@ -634,7 +634,7 @@ def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.
         logger.info("Tokenizer loaded successfully")
 
         model_kwargs = {
-            "torch_dtype": dtype,
+            "dtype": dtype,
             "local_files_only": local_files_only,
             "trust_remote_code": bool(config.get("trust_remote_code", True)),
         }

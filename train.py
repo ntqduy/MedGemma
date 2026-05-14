@@ -401,7 +401,7 @@ def load_processor_and_model(
     set_tokenizer_padding(tokenizer, logger)
 
     model_kwargs: Dict[str, Any] = {
-        "torch_dtype": dtype,
+        "dtype": dtype,
         "local_files_only": local_files_only,
         "trust_remote_code": trust_remote_code,
     }
