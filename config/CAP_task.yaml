@@ -1,7 +1,7 @@
 task_name: image_captioning
 task: cap
 
-dataset_path: ../M3D-Cap/M3D-Cap/M3D_Cap.json
+dataset_path: ../M3D-Cap/M3D_Cap/M3D_Cap.json
 image_root: ../M3D-Cap
 split: test1k
 sample: full
