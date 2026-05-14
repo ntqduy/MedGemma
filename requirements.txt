@@ -1,0 +1,23 @@
+# Core model/runtime dependencies
+torch>=2.3.0
+transformers>=4.53.0,<5
+accelerate>=0.30.0
+safetensors>=0.4.3
+sentencepiece>=0.2.0
+protobuf>=4.25.0
+
+# Data loading and image processing
+numpy>=1.24.0
+Pillow>=10.0.0
+nibabel>=5.2.0
+PyYAML>=6.0.1
+tqdm>=4.66.0
+
+# Fine-tuning
+peft>=0.11.0
+bitsandbytes>=0.43.0; platform_system != "Windows"
+
+# Optional evaluation metrics used when enabled in config/*.yaml
+nltk>=3.8.1
+bert-score>=0.3.13
+pycocoevalcap>=1.2
