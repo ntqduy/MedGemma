@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment/config secrets
+.env
+.env.*
+!.env.example
+
+# IDE / OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Evaluation/training outputs
+results/
+runs/
+outputs/
+checkpoints/
+wandb/
+tensorboard/
+lightning_logs/
+
+# Hugging Face / ML artifacts
+weight/
+weights/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+adapter_model.*
+optimizer.pt
+scheduler.pt
+trainer_state.json
+rng_state*.pth
+
+# Dataset/cache artifacts
+*.npy
+*.npz
+*.nii
+*.nii.gz
+*.h5
+*.hdf5
+*.parquet
+*.arrow
+*.cache
+.cache/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

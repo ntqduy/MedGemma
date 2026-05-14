@@ -1,0 +1,114 @@
+task_name: visual_question_answering
+task: vqa
+
+dataset_path: ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv
+image_root: ../M3D-Cap
+sample: full
+max_samples: null
+
+model_path: weight/medgemma-4b-pt
+output_root: results
+
+device: auto
+device_map: auto
+dtype: bfloat16
+local_files_only: true
+trust_remote_code: true
+
+prompt_template: "<start_of_image> Answer the medical visual question concisely.\nQuestion: {question}\n{choices}\nAnswer:"
+
+columns:
+  image: Image Path
+  question: Question
+  answer: Answer
+  answer_choice: Answer Choice
+  choice_a: Choice A
+  choice_b: Choice B
+  choice_c: Choice C
+  choice_d: Choice D
+
+image:
+  slice_axis: auto
+
+generation:
+  max_new_tokens: 64
+  temperature: 0.0
+  top_p: 1.0
+  do_sample: false
+  num_beams: 1
+
+training:
+  # mode: lora for fine-tune adapters, full for full pipeline training.
+  mode: lora
+  output_root: results
+  run_name: null
+  sample: 100
+  eval_sample: 100
+  do_eval: false
+  vqa_target: answer
+  num_train_epochs: 1
+  max_steps: -1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 0.0002
+  weight_decay: 0.0
+  warmup_ratio: 0.03
+  lr_scheduler_type: cosine
+  optim: adamw_torch
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 2
+  save_strategy: steps
+  eval_strategy: "no"
+  gradient_checkpointing: true
+  response_only_loss: true
+  append_eos_token: true
+  max_seq_length: 2048
+  dataloader_num_workers: 0
+  dataloader_pin_memory: true
+  report_to: "none"
+  seed: 42
+  save_final_model: true
+  merge_lora: false
+  overwrite_output_dir: false
+  freeze_vision: false
+  freeze_projector: false
+  freeze_language: false
+  quantization:
+    load_in_4bit: false
+    load_in_8bit: false
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_use_double_quant: true
+
+fine_tuning:
+  lora:
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    bias: "none"
+    task_type: CAUSAL_LM
+    target_modules: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+
+metrics:
+  exact_match: true
+  normalized_accuracy: true
+  token_f1: true
+  bleu: true
+  rouge: true
+  meteor: true
+  bertscore: true
+  bertscore_lang: en
+  bertscore_model_type: null
+  bertscore_rescale_with_baseline: false
+  cider: false
+  spice: false
+  flops: true
+  params: true
+
+logging:
+  save_predictions: true
+  preview_samples: 3
+  save_errors: true
+  verbose: true
