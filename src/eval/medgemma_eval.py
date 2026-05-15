@@ -561,6 +561,10 @@ def load_vqa_samples(
         answer_type = "closed" if choices else normalize_question_type("", choices, answer)
         if not answer and answer_choice in all_choices:
             answer = all_choices[answer_choice]
+        if choices and answer_choice:
+            answer = str(answer or "").strip()
+            if not re.match(rf"^{re.escape(answer_choice)}\s*\.", answer, flags=re.IGNORECASE):
+                answer = f"{answer_choice}. {answer}".strip()
         raw_id = row.get(schema["id"]) if schema.get("id") else None
         sample_id = str(raw_id or f"vqa_{index:06d}")
         samples.append(
@@ -901,13 +905,11 @@ def vqa_question_block(sample: EvalSample) -> str:
     choices = render_choices(sample.choices)
     question_type = str(sample.meta.get("question_type", "")).strip().lower()
     if choices and question_type not in {"yes_no", "open"}:
-        lines.append(choices)
-        labels = ", ".join(letter for letter in sample.choices)
-        choice_values = "; ".join(str(value) for value in sample.choices.values())
-        lines.append(f"You must choose exactly one option label from the input options: {labels}.")
-        lines.append(f"Valid answer texts are only: {choice_values}.")
-        lines.append("Output only one option label, for example: A")
-        lines.append("Do not describe the image. Do not explain.")
+        choice_parts = [f"{letter}. {text}" for letter, text in sample.choices.items() if text]
+        if choice_parts:
+            lines.append("Choices: " + " ".join(choice_parts))
+        else:
+            lines.append(choices)
     elif question_type == "yes_no" or normalize_answer(sample.ground_truth) in {"yes", "no"}:
         lines.append("Return only yes or no. Do not explain.")
     else:
@@ -1505,6 +1507,127 @@ def rouge_scores(predictions: Sequence[str], references: Sequence[str]) -> Dict[
     }
 
 
+_MED3DVLM_EVAL_BUNDLE: Optional[Dict[str, Any]] = None
+
+
+def med3dvlm_eval_bundle(logger: logging.Logger) -> Optional[Dict[str, Any]]:
+    global _MED3DVLM_EVAL_BUNDLE
+    if _MED3DVLM_EVAL_BUNDLE is not None:
+        return _MED3DVLM_EVAL_BUNDLE
+    if not package_available("evaluate"):
+        logger.warning("Med3DVLM-style metrics unavailable: evaluate is not installed")
+        _MED3DVLM_EVAL_BUNDLE = None
+        return None
+    try:
+        import evaluate  # type: ignore
+
+        _MED3DVLM_EVAL_BUNDLE = {
+            "bleu": evaluate.load("bleu"),
+            "rouge": evaluate.load("rouge"),
+            "meteor": evaluate.load("meteor"),
+            "bertscore": evaluate.load("bertscore"),
+        }
+        return _MED3DVLM_EVAL_BUNDLE
+    except Exception as exc:
+        logger.warning("Med3DVLM-style metrics failed to load: %s", exc)
+        logger.debug("Med3DVLM-style metrics traceback:\n%s", traceback.format_exc())
+        _MED3DVLM_EVAL_BUNDLE = None
+        return None
+
+
+def resolve_vqa_open_eval_style(metrics_config: Dict[str, Any]) -> str:
+    raw = str(metrics_config.get("vqa_open_eval_style", "med3dvlm")).strip().lower()
+    if raw in {"med3dvlm", "med3dvlm_style", "med3d"}:
+        return "med3dvlm"
+    if raw in {"legacy", "default", "medgemma"}:
+        return "legacy"
+    return "med3dvlm"
+
+
+def med3dvlm_row_metrics(prediction: str, reference: str, bundle: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    decoded_preds = [str(prediction).strip()]
+    decoded_labels = [[str(reference).strip()]]
+
+    bleu_score = bundle["bleu"].compute(predictions=decoded_preds, references=decoded_labels, max_order=1)
+    rouge_score = bundle["rouge"].compute(
+        predictions=decoded_preds,
+        references=decoded_labels,
+        rouge_types=["rouge1"],
+    )
+    meteor_score = bundle["meteor"].compute(predictions=decoded_preds, references=decoded_labels)
+    bert_score = bundle["bertscore"].compute(predictions=decoded_preds, references=decoded_labels, lang="en")
+    f1_values = bert_score.get("f1") or []
+    f1_mean = float(sum(f1_values) / len(f1_values)) if f1_values else None
+
+    return {
+        "bleu": float(bleu_score.get("bleu", 0.0)),
+        "rouge1": float(rouge_score.get("rouge1", 0.0)),
+        "meteor": float(meteor_score.get("meteor", 0.0)),
+        "bert_f1": f1_mean,
+    }
+
+
+def compute_text_metrics_med3dvlm(
+    predictions: Sequence[str],
+    references: Sequence[str],
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    bundle = med3dvlm_eval_bundle(logger)
+    if bundle is None:
+        return {}
+    decoded_preds = [str(text).strip() for text in predictions]
+    decoded_labels = [[str(text).strip()] for text in references]
+
+    bleu_score = bundle["bleu"].compute(predictions=decoded_preds, references=decoded_labels, max_order=1)
+    rouge_score = bundle["rouge"].compute(
+        predictions=decoded_preds,
+        references=decoded_labels,
+        rouge_types=["rouge1"],
+    )
+    meteor_score = bundle["meteor"].compute(predictions=decoded_preds, references=decoded_labels)
+    bert_score = bundle["bertscore"].compute(predictions=decoded_preds, references=decoded_labels, lang="en")
+    f1_values = bert_score.get("f1") or []
+    precision_values = bert_score.get("precision") or []
+    recall_values = bert_score.get("recall") or []
+
+    metrics: Dict[str, Any] = {
+        "BLEU-1": float(bleu_score.get("bleu", 0.0)),
+        "ROUGE-1": float(rouge_score.get("rouge1", 0.0)),
+        "METEOR": float(meteor_score.get("meteor", 0.0)),
+    }
+    if f1_values:
+        metrics["BERTScore"] = {
+            "Precision": float(sum(precision_values) / len(precision_values)) if precision_values else None,
+            "Recall": float(sum(recall_values) / len(recall_values)) if recall_values else None,
+            "F1": float(sum(f1_values) / len(f1_values)),
+        }
+    return metrics
+
+
+def compute_vqa_med3dvlm_metrics(
+    rows: Sequence[Dict[str, Any]],
+    logger: logging.Logger,
+) -> Optional[Dict[str, Any]]:
+    if not rows:
+        return None
+    open_rows = [row for row in rows if is_open_vqa_row(row)]
+    closed_rows = [row for row in rows if is_closed_vqa_row(row)]
+    metrics: Dict[str, Any] = {
+        "samples": {
+            "total": len(rows),
+            "open": len(open_rows),
+            "closed": len(closed_rows),
+        },
+        "closed_accuracy": accuracy_value(closed_rows, "correct"),
+        "open_text_metrics": None,
+    }
+    if open_rows:
+        predictions = [str(row.get("prediction", "")) for row in open_rows]
+        references = [str(row.get("ground_truth", "")) for row in open_rows]
+        metrics["open_text_metrics"] = compute_text_metrics_med3dvlm(predictions, references, logger)
+    return metrics
+
+
 def meteor_score_safe(
     predictions: Sequence[str],
     references: Sequence[str],
@@ -2080,9 +2203,16 @@ def per_sample_bertscore_f1(
 
 def build_row_metric_cache(
     rows: Sequence[Dict[str, Any]],
+    task: str,
     metrics_config: Dict[str, Any],
     logger: logging.Logger,
 ) -> List[Dict[str, Optional[float]]]:
+    if task == "vqa" and vqa_export_kind(rows) == "open" and resolve_vqa_open_eval_style(metrics_config) == "med3dvlm":
+        bundle = med3dvlm_eval_bundle(logger)
+        if bundle is None:
+            logger.warning("Falling back to legacy row metrics for VQA open.")
+        else:
+            return [med3dvlm_row_metrics(row.get("prediction", ""), row.get("ground_truth", ""), bundle) for row in rows]
     predictions = [str(row.get("prediction", "")) for row in rows]
     references = [str(row.get("ground_truth", "")) for row in rows]
     meteor_values = (
@@ -2651,7 +2781,7 @@ def write_eval_exports(
         logger.info("Saved VQA overall metric CSV: %s", vqa_overall_path)
 
     if bool_setting(metrics_config.get("export_med3dvlm_csv"), True):
-        row_metrics = build_row_metric_cache(rows, metrics_config, logger)
+        row_metrics = build_row_metric_cache(rows, task, metrics_config, logger)
         if task == "cap":
             csv_path = write_med3dvlm_caption_csv(output_dir, model_name, rows, row_metrics)
             extra_csv_paths: List[Path] = [write_caption_report_table_csv(output_dir, model_name, metrics)]
@@ -2665,6 +2795,13 @@ def write_eval_exports(
     if bool_setting(metrics_config.get("export_extra_metrics_file"), True):
         write_json(output_dir / "metrics_extra.json", metrics)
         logger.info("Saved extra metrics: %s", output_dir / "metrics_extra.json")
+
+    if task == "vqa" and bool_setting(metrics_config.get("export_med3dvlm_metrics"), True):
+        med3dvlm_metrics = compute_vqa_med3dvlm_metrics(rows, logger)
+        if med3dvlm_metrics is not None:
+            output_path = output_dir / "metrics_med3dvlm.json"
+            write_json(output_path, med3dvlm_metrics)
+            logger.info("Saved Med3DVLM-style VQA metrics: %s", output_path)
 
     metric_groups = metrics.get("Metric Groups")
     if isinstance(metric_groups, dict):
@@ -2914,19 +3051,34 @@ def evaluate_loop(
                     base_row["split"] = sample.split
                 else:
                     if sample.choices:
-                        prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
-                            raw_prediction, sample.choices
-                        )
+                        prediction_answer = clean_generated_text(raw_prediction)
+                        predicted_choice_label = None
+                        forced_choice = False
+                        choice_match_score = None
+                        answer_choice = str(sample.answer_choice or "").strip()
+                        if answer_choice:
+                            exact_match = f"{answer_choice}." in raw_prediction
+                            correct = exact_match
+                        else:
+                            prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
+                                raw_prediction, sample.choices
+                            )
+                            exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
+                            correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     elif normalize_answer(sample.ground_truth) in {"yes", "no"}:
                         prediction_answer = map_prediction_to_yes_no(raw_prediction)
                         predicted_choice_label = None
                         forced_choice = False
                         choice_match_score = None
+                        exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
+                        correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     else:
                         prediction_answer = clean_generated_text(raw_prediction)
                         predicted_choice_label = None
                         forced_choice = False
                         choice_match_score = None
+                        exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
+                        correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     base_row["raw_prediction"] = raw_prediction
                     base_row["prediction"] = prediction_answer
                     if sample.choices:
@@ -2935,8 +3087,6 @@ def evaluate_loop(
                         base_row["choice_match_score"] = choice_match_score
                     normalized_prediction = normalize_answer(prediction_answer)
                     normalized_ground_truth = normalize_answer(sample.ground_truth)
-                    exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
-                    correct = normalized_prediction == normalized_ground_truth
                     base_row.update(
                         {
                             "question": sample.question,
