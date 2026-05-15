@@ -121,13 +121,19 @@ The task configs use:
 
 ```yaml
 cuda_visible_devices: "0,1,2,3,4,5,6,7"
+parallel_eval: true
 device: auto
 device_map: auto
 ```
 
-Transformers / Accelerate can shard the model over all GPUs listed in
-`cuda_visible_devices`. If `CUDA_VISIBLE_DEVICES` or `CUDA_DEVICE_IDS` is set in
-the shell, that environment value overrides the config for that run.
+With `parallel_eval: true`, evaluation is split by sample across the GPUs in
+`cuda_visible_devices`: one worker process per GPU, then `predictions.jsonl`,
+`errors.jsonl`, and `metrics.json` are merged back into the main output folder.
+If `CUDA_VISIBLE_DEVICES` or `CUDA_DEVICE_IDS` is set in the shell, that
+environment value overrides the config for that run.
+
+Set `parallel_eval: false` if you only want a single process with
+Transformers/Accelerate `device_map: auto` model sharding.
 
 Direct CLI:
 

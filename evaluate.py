@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import statistics
+import subprocess
 import sys
 import time
 import traceback
@@ -171,6 +172,19 @@ def write_json(path: Path, payload: Any) -> None:
 def append_jsonl(handle: Any, payload: Dict[str, Any]) -> None:
     handle.write(json.dumps(to_jsonable(payload), ensure_ascii=False) + "\n")
     handle.flush()
+
+
+def read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+    return rows
 
 
 def package_available(module_name: str) -> bool:
@@ -977,6 +991,33 @@ def apply_cuda_visible_devices_config(config: Dict[str, Any], logger: logging.Lo
         return
     os.environ["CUDA_VISIBLE_DEVICES"] = value
     logger.info("Set CUDA_VISIBLE_DEVICES from config: %s", value)
+
+
+def parse_cuda_device_list(config: Dict[str, Any]) -> List[str]:
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES") or config.get("cuda_visible_devices", config.get("gpu_ids"))
+    if raw in (None, "", "auto"):
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+
+def should_run_parallel(config: Dict[str, Any], args: argparse.Namespace, samples: Sequence[Any]) -> bool:
+    if getattr(args, "no_parallel", False):
+        return False
+    if getattr(args, "num_shards", 1) and int(getattr(args, "num_shards", 1)) > 1:
+        return False
+    if len(samples) <= 1:
+        return False
+    return bool_from_config(config.get("parallel_eval"), False) and len(parse_cuda_device_list(config)) > 1
+
+
+def apply_sample_shard(samples: Sequence[EvalSample], shard_index: int, num_shards: int) -> List[EvalSample]:
+    if num_shards <= 1:
+        return list(samples)
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError(f"Invalid shard index {shard_index}; expected 0 <= index < {num_shards}")
+    return [sample for index, sample in enumerate(samples) if index % num_shards == shard_index]
 
 
 def bool_from_config(value: Any, default: bool = False) -> bool:
@@ -2223,6 +2264,168 @@ def log_metric_summary(metrics: Dict[str, Any], logger: logging.Logger) -> None:
             log_summary_row(logger, key, flops.get(key))
 
 
+def run_parallel_eval(
+    args: argparse.Namespace,
+    config_path: Path,
+    config: Dict[str, Any],
+    task: str,
+    split: str,
+    sample_value: Any,
+    sample_label: str,
+    slice_config: SliceInferenceConfig,
+    output_dir: Path,
+    schema_info: Dict[str, Any],
+    samples: Sequence[EvalSample],
+    logger: logging.Logger,
+    overall_start: float,
+) -> int:
+    devices = parse_cuda_device_list(config)
+    num_workers = min(len(devices), len(samples))
+    devices = devices[:num_workers]
+    shard_root = output_dir / "shards"
+    shard_root.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Parallel eval enabled: %d workers over devices %s", num_workers, ",".join(devices))
+    processes: List[Tuple[int, str, Path, subprocess.Popen]] = []
+    for shard_index, device in enumerate(devices):
+        safe_device = safe_filename(device)
+        shard_dir = shard_root / f"shard_{shard_index:02d}_gpu_{safe_device}"
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--config",
+            str(config_path),
+            "--task",
+            task,
+            "--sample",
+            str(sample_value),
+            "--output-dir",
+            str(shard_dir),
+            "--num-shards",
+            str(num_workers),
+            "--shard-index",
+            str(shard_index),
+            "--no-parallel",
+            "--skip-metrics",
+            "--num_slices",
+            str(slice_config.num_slices),
+            "--slice_strategy",
+            str(slice_config.slice_strategy),
+            "--view",
+            str(slice_config.view),
+            "--inference_mode",
+            str(slice_config.inference_mode),
+        ]
+        if task == "cap":
+            command.extend(["--split", split])
+        if args.dry_run:
+            command.append("--dry-run")
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = device
+        env["PYTHONUNBUFFERED"] = "1"
+        logger.info("Starting shard %d/%d on physical GPU(s) %s -> %s", shard_index, num_workers, device, shard_dir)
+        logger.info("Shard command: %s", " ".join(shlex.quote(part) for part in command))
+        processes.append(
+            (
+                shard_index,
+                device,
+                shard_dir,
+                subprocess.Popen(command, cwd=str(PROJECT_ROOT), env=env),
+            )
+        )
+
+    failed = []
+    for shard_index, device, shard_dir, process in processes:
+        return_code = process.wait()
+        if return_code != 0:
+            failed.append((shard_index, device, return_code, shard_dir))
+    if failed:
+        for shard_index, device, return_code, shard_dir in failed:
+            logger.error("Shard %d on GPU %s failed with code %s. See %s", shard_index, device, return_code, shard_dir)
+        return 1
+
+    rows: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    shard_metrics: List[Dict[str, Any]] = []
+    for shard_index, device, shard_dir, _ in processes:
+        rows.extend(read_jsonl(shard_dir / "predictions.jsonl"))
+        errors.extend(read_jsonl(shard_dir / "errors.jsonl"))
+        metrics_path = shard_dir / "metrics.json"
+        if metrics_path.exists():
+            shard_metrics.append(json.loads(metrics_path.read_text(encoding="utf-8")))
+
+    with (output_dir / "predictions.jsonl").open("w", encoding="utf-8") as handle:
+        for row in rows:
+            append_jsonl(handle, row)
+    with (output_dir / "errors.jsonl").open("w", encoding="utf-8") as handle:
+        for row in errors:
+            append_jsonl(handle, row)
+    write_previews(output_dir, rows[: int((config.get("logging") or {}).get("preview_samples", 3))], task)
+
+    metrics_config = dict(config.get("metrics") or {})
+    if getattr(args, "skip_metrics", False):
+        metrics = {
+            "task": task,
+            "skip_metrics": True,
+            "num_successful_samples": len(rows),
+            "num_requested_samples": len(samples),
+            "num_failed_samples": len(errors),
+            "slice_inference": slice_inference_config_to_dict(slice_config),
+            "dataset_schema": schema_info,
+            "Parameters": benchmark["parameters"],
+            "FLOPs": benchmark["flops"],
+            "Runtime": benchmark["runtime"],
+        }
+        write_json(output_dir / "metrics.json", metrics)
+        write_json(output_dir / "benchmark.json", benchmark)
+        logger.info("Saved predictions: %s", output_dir / "predictions.jsonl")
+        logger.info("Saved metrics: %s", output_dir / "metrics.json")
+        logger.info("Saved benchmark: %s", output_dir / "benchmark.json")
+        logger.info("Saved errors: %s", output_dir / "errors.jsonl")
+        logger.info("Skipped metric computation for worker shard.")
+        return 0
+
+    metrics = compute_task_metrics(task, rows, metrics_config, logger)
+    total_generated_tokens = sum(int(row.get("generated_tokens") or 0) for row in rows)
+    inference_times = [float(row.get("inference_time") or 0.0) for row in rows]
+    runtime = {
+        "requested_samples": len(samples),
+        "successful_samples": len(rows),
+        "failed_samples": len(errors),
+        "parallel_workers": num_workers,
+        "parallel_devices": devices,
+        "total_inference_time_sec": float(sum(inference_times)),
+        "total_runtime_sec": time.perf_counter() - overall_start,
+        "avg_inference_latency_sec": float(statistics.mean(inference_times)) if inference_times else None,
+        "throughput_samples_per_sec": len(rows) / max(time.perf_counter() - overall_start, 1e-9),
+        "total_generated_tokens": total_generated_tokens,
+        "avg_generated_tokens": total_generated_tokens / len(rows) if rows else None,
+    }
+    metrics.update(
+        {
+            "task": task,
+            "parallel_eval": True,
+            "parallel_workers": num_workers,
+            "parallel_devices": devices,
+            "shard_metrics": shard_metrics,
+            "slice_inference": slice_inference_config_to_dict(slice_config),
+            "dataset_schema": schema_info,
+            "num_requested_samples": len(samples),
+            "num_failed_samples": len(errors),
+            "Parameters": (shard_metrics[0].get("Parameters") if shard_metrics else {}),
+            "FLOPs": None,
+            "Runtime": runtime,
+        }
+    )
+    write_json(output_dir / "metrics.json", metrics)
+    write_json(output_dir / "benchmark.json", {"runtime": runtime, "parallel_eval": True, "shards": [str(p[2]) for p in processes]})
+    logger.info("Parallel eval finished. Merged predictions: %s", output_dir / "predictions.jsonl")
+    logger.info("Merged errors: %s", output_dir / "errors.jsonl")
+    logger.info("Merged metrics: %s", output_dir / "metrics.json")
+    log_metric_summary(metrics, logger)
+    return 0
+
+
 def build_output_dir(
     task: str,
     output_root: Path,
@@ -2309,6 +2512,36 @@ def run(args: argparse.Namespace) -> int:
     else:
         samples, schema_info = load_vqa_samples(config, dataset_path, image_root, max_samples, logger)
     logger.info("Resolved sample count: %d", len(samples))
+
+    if should_run_parallel(config, args, samples):
+        return run_parallel_eval(
+            args=args,
+            config_path=config_path,
+            config=config,
+            task=task,
+            split=split,
+            sample_value=sample_value,
+            sample_label=sample_label,
+            slice_config=slice_config,
+            output_dir=output_dir,
+            schema_info=schema_info,
+            samples=samples,
+            logger=logger,
+            overall_start=overall_start,
+        )
+
+    shard_index = int(getattr(args, "shard_index", 0) or 0)
+    num_shards = int(getattr(args, "num_shards", 1) or 1)
+    if num_shards > 1:
+        original_count = len(samples)
+        samples = apply_sample_shard(samples, shard_index, num_shards)
+        logger.info(
+            "Shard selection: shard_index=%d num_shards=%d selected=%d/%d",
+            shard_index,
+            num_shards,
+            len(samples),
+            original_count,
+        )
 
     if args.dry_run:
         dry_benchmark = build_benchmark({}, [], 0, 0, 0, len(samples), time.perf_counter() - overall_start, 0.0)
@@ -2417,6 +2650,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Run one montage image or run each selected slice independently. Default: montage.",
     )
+    parser.add_argument("--num-shards", type=int, default=1, help="Internal/advanced: split selected samples into N shards.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Internal/advanced: run only this shard index.")
+    parser.add_argument("--no-parallel", action="store_true", help="Disable config parallel_eval orchestration.")
+    parser.add_argument("--skip-metrics", action="store_true", help="Internal/advanced: write predictions and benchmark only.")
     parser.add_argument("--dry-run", action="store_true", help="Validate config/dataset and write skeleton outputs.")
     return parser
 
