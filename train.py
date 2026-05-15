@@ -681,6 +681,7 @@ def run(args: argparse.Namespace) -> int:
     logger.info("Train split: %s", train_split if task == "cap" else "N/A")
     logger.info("Sample count: %s", sample_label)
     logger.info("Output directory: %s", output_dir)
+    logger.info("Log file: %s", output_dir / "log.txt")
     logger.info("Package status: %s", json.dumps(package_status(), ensure_ascii=False))
 
     train_samples_raw, train_schema = load_samples_for_task(

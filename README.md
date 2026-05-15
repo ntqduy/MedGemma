@@ -73,9 +73,10 @@ Run from this directory.
 
 ### Main Evaluation Path
 
-Use the shell scripts for the normal workflow. They call `evaluate.py` with the
-task YAML configs, so prompt, slice selection, generation, metrics, and logging
-are controlled from `config/CAP_task.yaml` and `config/VQA_task.yaml`.
+Use the Med3DVLM-style shell scripts for the normal workflow. They call
+`src/eval/eval_caption.py` or `src/eval/eval_vqa.py`, which in turn use the task
+YAML configs, so prompt, slice selection, generation, metrics, and logging are
+controlled from `config/CAP_task.yaml` and `config/VQA_task.yaml`.
 
 Slice strategies:
 
@@ -88,18 +89,36 @@ center_uniform  -> N slices centered around the middle slice
 Captioning:
 
 ```bash
+bash scripts/eval/eval_caption.sh 100 test1k
+bash scripts/eval/eval_caption.sh full test1k
+bash scripts/eval/eval_caption.sh 100 test1k 16 axial montage center_uniform
+
+# Backward-compatible wrapper:
 bash scripts/eval_CAP.sh 100 test1k
-bash scripts/eval_CAP.sh full test1k
-bash scripts/eval_CAP.sh 100 test1k 9 axial montage center_uniform
 ```
 
 VQA:
 
 ```bash
+bash scripts/eval/eval_vqa.sh 100
+bash scripts/eval/eval_vqa.sh 100 open
+bash scripts/eval/eval_vqa.sh 100 closed
+bash scripts/eval/eval_vqa_open.sh 100
+bash scripts/eval/eval_vqa_closed.sh 100
+bash scripts/eval/eval_vqa.sh full
+bash scripts/eval/eval_vqa.sh 100 16 axial montage center_uniform
+
+# Backward-compatible wrapper:
 bash scripts/eval_VQA.sh 100
-bash scripts/eval_VQA.sh full
-bash scripts/eval_VQA.sh 100 9 axial montage center_uniform
 ```
+
+`open` and `closed` are evaluation modes, not separate labels in the CSV. The
+M3D-VQA rows include `Question`, `Choice A-D`, `Answer`, and `Answer Choice`.
+In open mode the evaluator hides choices and asks the model to generate the
+answer text, then compares it with `Answer`. In closed mode the evaluator shows
+the choices, maps the model output back to an option/text answer, and computes
+choice accuracy. The Med3DVLM-compatible alias `--close_ended` also selects
+closed mode.
 
 Multi-GPU:
 
@@ -128,7 +147,8 @@ device_map: auto
 
 With `parallel_eval: true`, evaluation is split by sample across the GPUs in
 `cuda_visible_devices`: one worker process per GPU, then `predictions.jsonl`,
-`errors.jsonl`, and `metrics.json` are merged back into the main output folder.
+`errors.jsonl`, `predict.*`, and metric files are merged back into the main
+output folder.
 If `CUDA_VISIBLE_DEVICES` or `CUDA_DEVICE_IDS` is set in the shell, that
 environment value overrides the config for that run.
 
@@ -138,6 +158,10 @@ Transformers/Accelerate `device_map: auto` model sharding.
 Direct CLI:
 
 ```bash
+python src/eval/eval_caption.py --sample 100 --split test1k
+python src/eval/eval_vqa.py --sample 100
+
+# Compatibility path:
 python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k
 python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100
 ```
@@ -146,21 +170,21 @@ Rule-based multi-slice baseline:
 
 ```bash
 python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k \
-  --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
+  --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 
 python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
-  --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
+  --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 ```
 
 The shell scripts support a short positional slice form and also forward normal
 CLI flags:
 
 ```bash
-bash scripts/eval_CAP.sh 100 test1k 9 axial montage center_uniform
-bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
+bash scripts/eval/eval_caption.sh 100 test1k 16 axial montage center_uniform
+bash scripts/eval/eval_caption.sh 100 test1k --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 
-bash scripts/eval_VQA.sh 100 9 axial montage center_uniform
-bash scripts/eval_VQA.sh 100 --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
+bash scripts/eval/eval_vqa.sh 100 16 axial montage center_uniform
+bash scripts/eval/eval_vqa.sh 100 --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 ```
 
 You can also use the shared entrypoint:
@@ -170,9 +194,24 @@ python main.py eval --config config/CAP_task.yaml --task cap --sample 100 --spli
 python main.py eval --config config/VQA_task.yaml --task vqa --sample 100
 ```
 
-Each run writes `predictions.jsonl`, `metrics.json`, `benchmark.json`,
+Each run writes the Med3DVLM-style CSV (`*_eval_caption.csv`,
+`*_eval_close_vqa.csv`, `*_eval_open_vqa.csv`, or `*_eval_vqa.csv`) plus
+MedGemma-specific outputs: `predictions.jsonl`, `predict.jsonl`, `predict.csv`,
+`metrics.json`, `metrics_extra.json`, `metrics_by_group.json`, `benchmark.json`,
 `run_config.yaml`, `log.txt`, `errors.jsonl`, and preview files under
-`results/EVAL_*`.
+`results/EVAL_*`. Captioning additionally writes
+`*_eval_caption_report_table.csv` with `Method`, `BLEU`, `ROUGE`, `METEOR`,
+`BERTScore`, `Parameters`, and `Flops`. For VQA, `metrics_by_group.json` splits scores into
+`total`, `closed`, `yes_no`, and `open`. VQA also writes a question-type
+summary CSV: `*_eval_open_vqa_by_question_type.csv` has BLEU-1, ROUGE-1,
+METEOR, and BERT-F1 means for `Plane`, `Phase`, `Organ`, `Abnormality`, and
+`Location`; `*_eval_close_vqa_by_question_type.csv` has per-type closed
+accuracy. Both include `macro_mean` and `micro_total` rows. The paper-style
+tables matching the usual VQA report layout are
+`*_eval_open_vqa_question_type_table.csv` and
+`*_eval_close_vqa_question_type_table.csv`. Full nested metric/benchmark values
+are also flattened into `metrics_full.csv`, and key VQA metrics are saved in
+`vqa_overall_metrics.csv`.
 
 ### Slice Inference Baseline
 
@@ -182,13 +221,13 @@ does not choose slices.
 The current task configs use:
 
 ```text
-num_slices: 9
+num_slices: 16
 slice_strategy: center_uniform
 view: axial
 inference_mode: montage
 ```
 
-The current default uses 9 slices centered around the middle slice. Avoid
+The current default uses 16 slices centered around the middle slice. Avoid
 `num_slices: auto` for montage runs because deep volumes can produce very large
 montages, for example 206 selected slices.
 
@@ -210,7 +249,7 @@ Rules:
 - `num_slices>1` selects uniformly spaced slices for the chosen view.
 - `slice_strategy=center_uniform` selects N slices around the middle slice.
 - `num_slices=auto` selects all valid slices after the 10% edge skip and should
-  not be used for the central 9-slice montage baseline.
+  not be used for the central multi-slice montage baseline.
 - Uniform selection skips the first and last 10% of the selected axis.
 - No entropy, mask, model-based, or adaptive selection is used.
 

@@ -1,7 +1,8 @@
 task_name: visual_question_answering
 task: vqa
+vqa_eval_mode: open
 
-dataset_path: ../M3D-VQA/M3D_VQA/M3D_VQA_test5k.csv
+dataset_path: ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv
 image_root: ../M3D-Cap
 sample: full
 max_samples: null
@@ -42,7 +43,7 @@ slice_inference:
   # view: axial
   # inference_mode: montage
   #
-  # Central 9-slice baseline. Active by default.
+  # Central multi-slice baseline. Active by default.
   # Do not use num_slices: auto here, because it may place the full valid depth
   # into one montage for deep volumes.
   num_slices: 16
@@ -115,6 +116,13 @@ fine_tuning:
     target_modules: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
 
 metrics:
+  export_med3dvlm_csv: true
+  export_extra_metrics_file: true
+  legacy_row_bertscore: true
+  group_metrics: true
+  group_text_metrics: true
+  group_bertscore: false
+  group_cider_spice: false
   exact_match: true
   normalized_accuracy: true
   token_f1: true
