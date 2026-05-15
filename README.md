@@ -71,11 +71,50 @@ different location.
 
 Run from this directory.
 
+### MedGemma M3D Baseline
+
+Use this entrypoint for the fixed rule-based baseline on M3D-Cap and M3D-VQA.
+It samples user-specified 2D slices from each 3D volume and passes them as
+multi-image input to MedGemma. It uses a grid only when `--slice_grid` is set.
+
+```bash
+python evaluate_medgemma_m3d.py \
+  --model_path weight/medgemma-1.5-4b-it \
+  --cap_json ../M3D-Cap/M3D_Cap/M3D_Cap.json \
+  --vqa_csv ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv \
+  --task both \
+  --num_slices 9 \
+  --slice_strategy uniform \
+  --plane axial \
+  --max_samples 100 \
+  --output_dir outputs/medgemma_m3d_eval
+```
+
+Slice strategies:
+
+```text
+middle          -> middle slice only, use with --num_slices 1
+uniform         -> N slices uniformly across the volume axis
+center_uniform  -> N slices centered around the middle slice
+```
+
+Outputs:
+
+```text
+config.json
+run.log
+predictions_cap.jsonl
+predictions_vqa.jsonl
+metrics_cap.json
+metrics_vqa.json
+```
+
 Captioning:
 
 ```bash
 bash scripts/eval_CAP.sh 100 test1k
 bash scripts/eval_CAP.sh full test1k
+bash scripts/eval_CAP.sh 100 test1k auto axial montage uniform
 bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
 ```
 
@@ -84,6 +123,7 @@ VQA:
 ```bash
 bash scripts/eval_VQA.sh 100
 bash scripts/eval_VQA.sh full
+bash scripts/eval_VQA.sh 100 auto axial montage uniform
 bash scripts/eval_VQA.sh 100 64 axial montage uniform
 ```
 
@@ -109,9 +149,11 @@ CLI flags:
 
 ```bash
 bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
+bash scripts/eval_CAP.sh 100 test1k auto axial montage uniform
 bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
 
 bash scripts/eval_VQA.sh 100 64 axial montage uniform
+bash scripts/eval_VQA.sh 100 auto axial montage uniform
 bash scripts/eval_VQA.sh 100 --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
 ```
 
@@ -134,11 +176,15 @@ does not choose slices.
 The current task configs use:
 
 ```text
-num_slices: 64
+num_slices: auto
 slice_strategy: uniform
 view: axial
 inference_mode: montage
 ```
+
+`num_slices: auto` means each sample uses the maximum valid slice count for the
+chosen view after skipping the first and last 10% of the volume axis. You can
+also use `max` or `all`.
 
 The evaluator fallback defaults, used only when neither CLI nor config provides
 values, are:
@@ -156,6 +202,7 @@ Rules:
 
 - `num_slices=1` selects the middle slice for the chosen view.
 - `num_slices>1` selects uniformly spaced slices for the chosen view.
+- `num_slices=auto` selects all valid slices after the 10% edge skip.
 - Uniform selection skips the first and last 10% of the selected axis.
 - No entropy, mask, model-based, or adaptive selection is used.
 

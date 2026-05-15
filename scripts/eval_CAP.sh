@@ -15,8 +15,9 @@ Usage:
 
 Examples:
   bash scripts/eval_CAP.sh 1 test1k
+  bash scripts/eval_CAP.sh 1 test1k auto axial montage uniform
   bash scripts/eval_CAP.sh 1 test1k 64 axial montage uniform
-  bash scripts/eval_CAP.sh 1 test1k --num_slices 64 --view axial --inference_mode montage
+  bash scripts/eval_CAP.sh 1 test1k --num_slices auto --view axial --inference_mode montage
 USAGE
   exit 0
 fi

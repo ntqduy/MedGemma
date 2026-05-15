@@ -39,9 +39,10 @@ slice_inference:
   # view: axial
   # inference_mode: montage
   #
-  # Multi-slice montage baseline. Active by default.
-  # num_slices>1 uses uniformly spaced slices and skips 10% at both ends.
-  num_slices: 64
+  # Automatic max-slice montage baseline. Active by default.
+  # num_slices: auto uses the maximum valid slice count for each sample.
+  # It still skips 10% at both ends and uses fixed uniform ordering.
+  num_slices: auto
   slice_strategy: uniform
   view: axial
   inference_mode: montage

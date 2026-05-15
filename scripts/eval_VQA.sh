@@ -14,8 +14,9 @@ Usage:
 
 Examples:
   bash scripts/eval_VQA.sh 1
+  bash scripts/eval_VQA.sh 1 auto axial montage uniform
   bash scripts/eval_VQA.sh 1 64 axial montage uniform
-  bash scripts/eval_VQA.sh 1 --num_slices 64 --view axial --inference_mode montage
+  bash scripts/eval_VQA.sh 1 --num_slices auto --view axial --inference_mode montage
 USAGE
   exit 0
 fi
