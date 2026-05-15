@@ -39,11 +39,11 @@ slice_inference:
   # view: axial
   # inference_mode: montage
   #
-  # Automatic max-slice montage baseline. Active by default.
-  # num_slices: auto uses the maximum valid slice count for each sample.
-  # It still skips 10% at both ends and uses fixed uniform ordering.
-  num_slices: auto
-  slice_strategy: uniform
+  # Central 9-slice baseline. Active by default.
+  # Do not use num_slices: auto here, because it may place the full valid depth
+  # into one montage for deep volumes.
+  num_slices: 16
+  slice_strategy: center_uniform
   view: axial
   inference_mode: montage
 

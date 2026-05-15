@@ -654,6 +654,14 @@ def select_slice_indices(depth: int, num_slices: int, slice_strategy: str) -> Li
     if num_slices <= 1 or slice_strategy == "middle":
         return [depth // 2]
 
+    if slice_strategy == "center_uniform":
+        target_count = max(1, min(int(num_slices), depth))
+        center = depth // 2
+        start = max(0, center - (target_count // 2))
+        end = min(depth, start + target_count)
+        start = max(0, end - target_count)
+        return list(range(start, end))
+
     start, end = slice_window(depth)
     valid_count = max(end - start + 1, 1)
     target_count = max(1, min(int(num_slices), valid_count))
@@ -802,7 +810,7 @@ def vqa_question_block(sample: EvalSample) -> str:
     choices = render_choices(sample.choices)
     if choices:
         lines.append(choices)
-        lines.append("Answer with the best option letter and a concise answer.")
+        lines.append("Return only the final option label. Do not explain.")
     else:
         lines.append("Answer concisely.")
     return "\n".join(lines)
@@ -816,14 +824,15 @@ def build_montage_prompt(
 ) -> str:
     if task == "vqa":
         return with_image_token(
-            f"You are reviewing a montage of {num_slices} {slice_config.view} slices from a 3D medical "
-            "volume, ordered from first to last slice. Use all visible slices to answer the medical "
-            f"visual question.\n{vqa_question_block(sample)}"
+            f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
+            "medical volume, ordered from first to last slice. Answer based only on visible findings.\n"
+            f"{vqa_question_block(sample)}"
         )
     return with_image_token(
-        f"You are reviewing a montage of {num_slices} {slice_config.view} slices from a 3D medical "
-        "volume, ordered from first to last slice. Generate one concise radiology-style caption "
-        "summarizing the main imaging findings across the volume. Do not describe the montage layout."
+        f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
+        "medical volume, ordered from first to last slice. Generate a concise radiology-style caption "
+        "describing only visible imaging findings. Do not infer patient history or findings not visible "
+        "in the image."
     )
 
 
@@ -836,15 +845,16 @@ def build_independent_prompt(
     num_slices: int,
 ) -> str:
     prefix = (
-        f"This image is {slice_config.view} slice {ordinal + 1} of {num_slices} "
-        f"from a 3D medical volume, selected by a fixed rule at slice index {slice_index}."
+        f"This image shows {num_slices} {slice_config.view} slice(s) sampled from a 3D medical volume. "
+        f"This is slice {ordinal + 1} of {num_slices}, selected by a fixed rule at slice index {slice_index}."
     )
     if task == "vqa":
         return with_image_token(
-            f"{prefix} Answer the medical visual question based only on this slice.\n{vqa_question_block(sample)}"
+            f"{prefix} Answer the question based only on visible findings.\n{vqa_question_block(sample)}"
         )
     return with_image_token(
-        f"{prefix} Generate one concise radiology-style caption describing the main finding visible on this slice."
+        f"{prefix} Generate a concise radiology-style caption describing only visible imaging findings. "
+        "Do not infer patient history or findings not visible in the image."
     )
 
 
@@ -948,9 +958,14 @@ def build_slice_inference_config(config: Dict[str, Any], args: argparse.Namespac
     requested_strategy = str(
         args.slice_strategy if getattr(args, "slice_strategy", None) is not None else configured.get("slice_strategy", "middle")
     ).strip().lower()
-    if requested_strategy not in {"middle", "uniform"}:
-        raise ValueError("--slice_strategy must be one of: middle, uniform")
-    slice_strategy = "middle" if num_slices == 1 else "uniform"
+    if requested_strategy not in {"middle", "uniform", "center_uniform"}:
+        raise ValueError("--slice_strategy must be one of: middle, uniform, center_uniform")
+    if num_slices == 1:
+        slice_strategy = "middle"
+    elif requested_strategy == "middle":
+        raise ValueError("--slice_strategy middle requires --num_slices 1. Use center_uniform for central multi-slice runs.")
+    else:
+        slice_strategy = requested_strategy
 
     view = str(args.view if getattr(args, "view", None) is not None else configured.get("view", "axial")).strip().lower()
     if view not in {"axial", "sagittal", "coronal"}:
@@ -2046,9 +2061,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--slice_strategy",
         "--slice-strategy",
         dest="slice_strategy",
-        choices=["middle", "uniform"],
+        choices=["middle", "uniform", "center_uniform"],
         default=None,
-        help="Rule-based slice selection strategy. Default: middle for one slice, uniform for multiple slices.",
+        help="Rule-based slice selection strategy. Use center_uniform for N slices around the middle slice.",
     )
     parser.add_argument(
         "--view",

@@ -18,9 +18,8 @@ Usage:
 
 Examples:
   bash scripts/eval_CAP.sh 1 test1k
-  bash scripts/eval_CAP.sh 1 test1k auto axial montage uniform
-  bash scripts/eval_CAP.sh 1 test1k 64 axial montage uniform
-  bash scripts/eval_CAP.sh 1 test1k --num_slices auto --view axial --inference_mode montage
+  bash scripts/eval_CAP.sh 1 test1k 9 axial montage center_uniform
+  bash scripts/eval_CAP.sh 1 test1k --num_slices 9 --view axial --inference_mode montage --slice_strategy center_uniform
 
 GPU:
   Default physical GPU: 1
@@ -33,7 +32,7 @@ if [ "$#" -gt 2 ] && [[ "${3}" != -* ]]; then
   NUM_SLICES="${3}"
   VIEW="${4:-axial}"
   INFERENCE_MODE="${5:-montage}"
-  SLICE_STRATEGY="${6:-uniform}"
+  SLICE_STRATEGY="${6:-center_uniform}"
   EXTRA_ARGS=(
     --num_slices "${NUM_SLICES}"
     --slice_strategy "${SLICE_STRATEGY}"

@@ -84,7 +84,7 @@ python evaluate_medgemma_m3d.py \
   --vqa_csv ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv \
   --task both \
   --num_slices 9 \
-  --slice_strategy uniform \
+  --slice_strategy center_uniform \
   --plane axial \
   --max_samples 100 \
   --output_dir outputs/medgemma_m3d_eval
@@ -114,8 +114,7 @@ Captioning:
 ```bash
 bash scripts/eval_CAP.sh 100 test1k
 bash scripts/eval_CAP.sh full test1k
-bash scripts/eval_CAP.sh 100 test1k auto axial montage uniform
-bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
+bash scripts/eval_CAP.sh 100 test1k 9 axial montage center_uniform
 ```
 
 VQA:
@@ -123,8 +122,7 @@ VQA:
 ```bash
 bash scripts/eval_VQA.sh 100
 bash scripts/eval_VQA.sh full
-bash scripts/eval_VQA.sh 100 auto axial montage uniform
-bash scripts/eval_VQA.sh 100 64 axial montage uniform
+bash scripts/eval_VQA.sh 100 9 axial montage center_uniform
 ```
 
 Direct CLI:
@@ -138,23 +136,21 @@ Rule-based multi-slice baseline:
 
 ```bash
 python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k \
-  --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
+  --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
 
 python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
-  --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
+  --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
 ```
 
 The shell scripts support a short positional slice form and also forward normal
 CLI flags:
 
 ```bash
-bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
-bash scripts/eval_CAP.sh 100 test1k auto axial montage uniform
-bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
+bash scripts/eval_CAP.sh 100 test1k 9 axial montage center_uniform
+bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
 
-bash scripts/eval_VQA.sh 100 64 axial montage uniform
-bash scripts/eval_VQA.sh 100 auto axial montage uniform
-bash scripts/eval_VQA.sh 100 --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
+bash scripts/eval_VQA.sh 100 9 axial montage center_uniform
+bash scripts/eval_VQA.sh 100 --num_slices 9 --slice_strategy center_uniform --view axial --inference_mode montage
 ```
 
 You can also use the shared entrypoint:
@@ -176,15 +172,15 @@ does not choose slices.
 The current task configs use:
 
 ```text
-num_slices: auto
-slice_strategy: uniform
+num_slices: 9
+slice_strategy: center_uniform
 view: axial
 inference_mode: montage
 ```
 
-`num_slices: auto` means each sample uses the maximum valid slice count for the
-chosen view after skipping the first and last 10% of the volume axis. You can
-also use `max` or `all`.
+The current default uses 9 slices centered around the middle slice. Avoid
+`num_slices: auto` for montage runs because deep volumes can produce very large
+montages, for example 206 selected slices.
 
 The evaluator fallback defaults, used only when neither CLI nor config provides
 values, are:
@@ -202,7 +198,9 @@ Rules:
 
 - `num_slices=1` selects the middle slice for the chosen view.
 - `num_slices>1` selects uniformly spaced slices for the chosen view.
-- `num_slices=auto` selects all valid slices after the 10% edge skip.
+- `slice_strategy=center_uniform` selects N slices around the middle slice.
+- `num_slices=auto` selects all valid slices after the 10% edge skip and should
+  not be used for the central 9-slice montage baseline.
 - Uniform selection skips the first and last 10% of the selected axis.
 - No entropy, mask, model-based, or adaptive selection is used.
 

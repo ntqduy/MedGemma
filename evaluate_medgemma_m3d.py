@@ -398,37 +398,50 @@ def image_tokens(count: int) -> str:
     return " ".join("<start_of_image>" for _ in range(max(count, 1)))
 
 
-def cap_prompt(num_images: int) -> str:
-    body = (
-        "You are a medical imaging assistant. Based on the provided 2D slices sampled from a 3D "
-        "medical image, generate a concise radiology-style description of the main anatomical "
-        "findings. Do not mention uncertainty about missing slices unless necessary. Answer with "
-        "only the report/caption."
-    )
+def cap_prompt(num_images: int, num_slices: int, view: str, is_montage: bool) -> str:
+    if is_montage:
+        body = (
+            f"This image is a montage of {num_slices} {view} slices sampled from a 3D medical volume, "
+            "ordered from first to last slice. Generate a concise radiology-style caption describing "
+            "only visible imaging findings. Do not infer patient history or findings not visible in the image."
+        )
+    else:
+        body = (
+            f"This image shows {num_slices} {view} slice(s) sampled from a 3D medical volume. Generate "
+            "a concise radiology-style caption describing only visible imaging findings. Do not infer "
+            "patient history or findings not visible in the image."
+        )
     return f"{image_tokens(num_images)}\n{body}"
 
 
-def vqa_prompt(sample: VqaSample, num_images: int) -> str:
+def vqa_prompt(sample: VqaSample, num_images: int, num_slices: int, view: str, is_montage: bool) -> str:
+    if is_montage:
+        prefix = (
+            f"This image is a montage of {num_slices} {view} slices sampled from a 3D medical volume, "
+            "ordered from first to last slice. Answer based only on visible findings."
+        )
+    else:
+        prefix = (
+            f"This image shows {num_slices} {view} slice(s) sampled from a 3D medical volume. "
+            "Answer the question based only on visible findings."
+        )
     if sample.choices:
         choices = render_choices(sample.choices)
         body = (
-            "You are a medical imaging assistant. Answer the question based only on the provided "
-            "medical image slices.\n\n"
+            f"{prefix}\n\n"
             f"Question: {sample.question}\n\n"
             f"{choices}\n\n"
             "Return only the final option label. Do not explain."
         )
     elif sample.question_type == "yes_no" or normalize_eval_text(sample.ground_truth) in {"yes", "no"}:
         body = (
-            "You are a medical imaging assistant. Answer the question based only on the provided "
-            "medical image slices.\n\n"
+            f"{prefix}\n\n"
             f"Question: {sample.question}\n\n"
             "Return only yes or no. Do not explain."
         )
     else:
         body = (
-            "You are a medical imaging assistant. Answer the question based only on the provided "
-            "2D slices sampled from a 3D medical image.\n\n"
+            f"{prefix}\n\n"
             f"Question: {sample.question}\n\n"
             "Answer concisely."
         )
@@ -683,11 +696,12 @@ def prepare_images(
     logger: logging.Logger,
 ) -> Tuple[List[Image.Image], List[int], str, Optional[str]]:
     slices, indices = sample_slices(Path(image_path), args.num_slices, args.slice_strategy, args.plane)
+    actual_num_slices = len(indices)
     if args.slice_grid:
         grid = build_slice_grid(slices, args.grid_size)
-        prompt = prompt_builder(1)
+        prompt = prompt_builder(1, actual_num_slices, True)
         return [grid], indices, prompt, None
-    prompt = prompt_builder(len(slices))
+    prompt = prompt_builder(len(slices), actual_num_slices, False)
     return slices, indices, prompt, None
 
 
@@ -709,7 +723,9 @@ def evaluate_cap(
                 images, slice_indices, prompt, _ = prepare_images(
                     sample.image_path,
                     args,
-                    cap_prompt,
+                    lambda image_count, slice_count, is_montage, a=args: cap_prompt(
+                        image_count, slice_count, a.plane, is_montage
+                    ),
                     logger,
                 )
                 actual_num_slices = len(slice_indices)
@@ -797,7 +813,9 @@ def evaluate_vqa(
                 images, slice_indices, prompt, _ = prepare_images(
                     sample.image_path,
                     args,
-                    lambda image_count, s=sample: vqa_prompt(s, image_count),
+                    lambda image_count, slice_count, is_montage, s=sample, a=args: vqa_prompt(
+                        s, image_count, slice_count, a.plane, is_montage
+                    ),
                     logger,
                 )
                 actual_num_slices = len(slice_indices)
@@ -963,8 +981,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image_root", default=None, help="Optional image root. Defaults are inferred from dataset paths.")
     parser.add_argument("--task", choices=["cap", "vqa", "both"], default="both")
     parser.add_argument("--cap_split", default="test1k", help="CAP split to evaluate.")
-    parser.add_argument("--num_slices", type=int, default=1)
-    parser.add_argument("--slice_strategy", choices=["middle", "uniform", "center_uniform"], default="uniform")
+    parser.add_argument("--num_slices", type=int, default=9)
+    parser.add_argument("--slice_strategy", choices=["middle", "uniform", "center_uniform"], default="center_uniform")
     parser.add_argument("--plane", choices=["axial", "sagittal", "coronal"], default="axial")
     parser.add_argument("--max_samples", default=None, help="Maximum samples per task, or full.")
     parser.add_argument("--output_dir", required=True)
