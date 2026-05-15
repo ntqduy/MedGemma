@@ -7,11 +7,15 @@ MedGemma's 2D image-text processor.
 
 CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 
+# Med3DVLM open VQA does not use a separate prompt list in prompt_templates.py.
+# In Med3DVLM/src/dataset/mllm_dataset.py, open VQA is built as:
+#     image_tokens + " " + data["Question"]
+# For MedGemma, <start_of_image> is the image token equivalent.
 VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image> {question}"
 
 VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image> {question} {choices_inline}"
 
-VQA_PROMPT_TEMPLATE = VQA_CLOSED_PROMPT_TEMPLATE
+VQA_PROMPT_TEMPLATE = VQA_OPEN_PROMPT_TEMPLATE
 
 Caption_templates = [
     "Can you provide a caption consists of findings for this medical image?",
@@ -55,7 +59,5 @@ Caption_templates = [
 ]
 
 VQA_templates = [
-    "Answer the medical visual question concisely.",
-    "Answer based only on the visible medical image.",
-    "Use the image evidence to answer the question.",
+    VQA_OPEN_PROMPT_TEMPLATE,
 ]

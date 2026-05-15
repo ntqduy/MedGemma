@@ -1013,12 +1013,7 @@ def build_montage_prompt(
     num_slices: int,
 ) -> str:
     if task == "vqa":
-        prompt_body = vqa_question_block(sample)
-        return with_image_token(
-            f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
-            "medical volume, ordered from first to last slice.\n"
-            f"{prompt_body}"
-        )
+        return with_image_token(sample.prompt or vqa_question_block(sample))
     return with_image_token(
         f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
         "medical volume, ordered from first to last slice. Generate a concise radiology-style caption "
@@ -1040,10 +1035,7 @@ def build_independent_prompt(
         f"This is slice {ordinal + 1} of {num_slices}, selected by a fixed rule at slice index {slice_index}."
     )
     if task == "vqa":
-        prompt_body = vqa_question_block(sample)
-        return with_image_token(
-            f"{prefix}\n{prompt_body}"
-        )
+        return with_image_token(sample.prompt or vqa_question_block(sample))
     return with_image_token(
         f"{prefix} Generate a concise radiology-style caption describing only visible imaging findings. "
         "Do not infer patient history or findings not visible in the image."
