@@ -879,7 +879,11 @@ def get_processor_use_fast(config: Dict[str, Any]) -> bool:
 
 def build_slice_inference_config(config: Dict[str, Any], args: argparse.Namespace) -> SliceInferenceConfig:
     configured = dict(config.get("slice_inference") or {})
-    raw_num_slices = args.num_slices if getattr(args, "num_slices", None) is not None else configured.get("num_slices", 1)
+    raw_num_slices = (
+        args.num_slices
+        if getattr(args, "num_slices", None) is not None
+        else configured.get("num_slices", configured.get("num_slice", 1))
+    )
     try:
         num_slices = int(raw_num_slices)
     except (TypeError, ValueError) as exc:
@@ -1923,7 +1927,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default=None, help="Optional explicit output directory.")
     parser.add_argument(
         "--num_slices",
+        "--num_slice",
         "--num-slices",
+        "--num-slice",
         dest="num_slices",
         type=int,
         default=None,

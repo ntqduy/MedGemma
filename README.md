@@ -102,6 +102,13 @@ python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
   --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
 ```
 
+The shell scripts forward extra arguments after their positional arguments:
+
+```bash
+bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
+bash scripts/eval_VQA.sh 100 --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
+```
+
 You can also use the shared entrypoint:
 
 ```bash
@@ -126,6 +133,8 @@ Defaults:
 --view axial
 --inference_mode montage
 ```
+
+`--num_slice` and `--num-slice` are accepted as aliases for `--num_slices`.
 
 Rules:
 
