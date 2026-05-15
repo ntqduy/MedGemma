@@ -23,7 +23,7 @@ prompt_templates:
   # Med3DVLM style: image token + question; closed adds inline choices.
   # Add an explicit answer cue to reduce echoing the question.
   open: "<start_of_image>{question}\nAnswer:"
-  closed: "<start_of_image>{question} {choices_inline}\nAnswer:"
+  closed: "<start_of_turn>user\n<start_of_image>Answer the following medical visual question based only on the image.\nQuestion: {question}\n{choices}\nSelect the best option and give the option letter with the answer text only.\nAnswer:<end_of_turn>\n<start_of_turn>model\n"
 
 columns:
   image: Image Path
