@@ -7,18 +7,37 @@ MedGemma's 2D image-text processor.
 
 CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 
-# Med3DVLM open VQA does not use a separate prompt list in prompt_templates.py.
-# In Med3DVLM/src/dataset/mllm_dataset.py, open VQA is built as:
-#     image_tokens + " " + data["Question"]
-# For MedGemma, <start_of_image> is the image token equivalent.
+MEDGEMMA_USER_TURN = "<start_of_turn>user\n"
+MEDGEMMA_MODEL_TURN = "<end_of_turn>\n<start_of_turn>model\n"
+
+# Med3DVLM VQA builds prompts from the raw dataset fields:
+#   open:   image_tokens + " " + Question
+#   closed: image_tokens + " " + Question + " " + Choices: A... B... C... D...
+# MedGemma is instruction-tuned with the Gemma chat template:
+#   <start_of_turn>user
+#   <start_of_image>...question...
+#   <end_of_turn>
+#   <start_of_turn>model
+# We keep the same open/closed information boundary as Med3DVLM while using
+# that native chat frame so VQA generation starts as an answer, not a new user
+# question or explanation.
 VQA_OPEN_PROMPT_TEMPLATE = (
-    "<start_of_image> {question}\n"
-    "Answer with only the final short answer. Do not explain or list options."
+    MEDGEMMA_USER_TURN
+    + "<start_of_image>Answer the following medical visual question based only on the image.\n"
+    "Question: {question}\n"
+    "Give the final answer only. Do not explain or ask a follow-up question.\n"
+    "Answer:"
+    + MEDGEMMA_MODEL_TURN
 )
 
 VQA_CLOSED_PROMPT_TEMPLATE = (
-    "<start_of_image> {question} {choices_inline}\n"
-    "Answer with only the option letter and option text. Do not explain."
+    MEDGEMMA_USER_TURN
+    + "<start_of_image>Answer the following medical visual question based only on the image.\n"
+    "Question: {question}\n"
+    "{choices}\n"
+    "Select the best option and give the option letter with the answer text only.\n"
+    "Answer:"
+    + MEDGEMMA_MODEL_TURN
 )
 
 VQA_PROMPT_TEMPLATE = VQA_OPEN_PROMPT_TEMPLATE

@@ -145,15 +145,12 @@ evaluator shows the choices, maps the raw model output back to an option/text
 answer, and computes closed Q&A accuracy. The Med3DVLM-compatible alias
 `--close_ended` also selects closed mode; `--open_ended` selects open mode.
 Open VQA follows the Med3DVLM data convention: choices are hidden and the
-prompt contains the image token plus the question, with a short-answer
-instruction for MedGemma. Its main scores are text metrics from the internal
-metric pipeline: BLEU, ROUGE, METEOR, and BERTScore, averaged by question type.
-Verbose open answers are kept in `raw_prediction`, while `prediction`/`PR` is
-post-processed into the concise answer used for metrics. By default, hidden
-choices are used only after generation to canonicalize outputs such as
-`axial plane` to `Axial`; set `metrics.vqa_open_map_hidden_choices: false` for
-strict free-text scoring. Closed VQA appends choices inline and reports choice
-accuracy.
+prompt uses MedGemma's native chat turn markers from the local
+`chat_template.jinja` to ask MedGemma to answer the raw question directly. Its
+main scores are text metrics from the internal metric pipeline: BLEU, ROUGE,
+METEOR, and BERTScore, averaged by question type. In open mode,
+`prediction`/`PR` is the cleaned model text; it is not shortened or mapped to
+hidden choices. Closed VQA appends choices and reports choice accuracy.
 
 Direct VQA CLI equivalents:
 

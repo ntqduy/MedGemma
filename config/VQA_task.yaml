@@ -20,10 +20,11 @@ trust_remote_code: true
 
 prompt_template: null
 prompt_templates:
-  # Med3DVLM-style open VQA adapted for MedGemma: choices are hidden, answer is short.
-  open: "<start_of_image> {question}\nAnswer with only the final short answer. Do not explain or list options."
-  # Closed VQA appends choices inline and asks for only the selected option.
-  closed: "<start_of_image> {question} {choices_inline}\nAnswer with only the option letter and option text. Do not explain."
+  # Open mirrors Med3DVLM's information boundary: image token + raw question, no choices.
+  # The turn markers follow MedGemma's original chat template.
+  open: "<start_of_turn>user\n<start_of_image>Answer the following medical visual question based only on the image.\nQuestion: {question}\nGive the final answer only. Do not explain or ask a follow-up question.\nAnswer:<end_of_turn>\n<start_of_turn>model\n"
+  # Closed mirrors Med3DVLM's information boundary: same question plus answer choices.
+  closed: "<start_of_turn>user\n<start_of_image>Answer the following medical visual question based only on the image.\nQuestion: {question}\n{choices}\nSelect the best option and give the option letter with the answer text only.\nAnswer:<end_of_turn>\n<start_of_turn>model\n"
 
 columns:
   image: Image Path
@@ -126,10 +127,6 @@ metrics:
   # Open VQA uses the internal text-metric pipeline, not Hugging Face evaluate:
   # BLEU/ROUGE/METEOR/BERTScore are computed the same way as grouped text metrics.
   vqa_open_eval_style: legacy
-  # Keep raw_prediction, but score open VQA on a concise post-processed answer.
-  # Hidden choices are never shown in the open prompt; they are only used to
-  # canonicalize outputs like "axial plane" -> "Axial" for text metrics/debug.
-  vqa_open_map_hidden_choices: true
   export_extra_metrics_file: true
   legacy_row_bertscore: true
   group_metrics: true

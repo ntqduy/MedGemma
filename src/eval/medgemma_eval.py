@@ -46,8 +46,23 @@ try:
     from src.dataset.prompt_templates import CAPTION_PROMPT_TEMPLATE, VQA_CLOSED_PROMPT_TEMPLATE, VQA_OPEN_PROMPT_TEMPLATE
 except Exception:
     CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
-    VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image> {question}"
-    VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image> {question} {choices_inline}"
+    VQA_OPEN_PROMPT_TEMPLATE = (
+        "<start_of_turn>user\n"
+        "<start_of_image>Answer the following medical visual question based only on the image.\n"
+        "Question: {question}\n"
+        "Give the final answer only. Do not explain or ask a follow-up question.\n"
+        "Answer:<end_of_turn>\n"
+        "<start_of_turn>model\n"
+    )
+    VQA_CLOSED_PROMPT_TEMPLATE = (
+        "<start_of_turn>user\n"
+        "<start_of_image>Answer the following medical visual question based only on the image.\n"
+        "Question: {question}\n"
+        "{choices}\n"
+        "Select the best option and give the option letter with the answer text only.\n"
+        "Answer:<end_of_turn>\n"
+        "<start_of_turn>model\n"
+    )
 
 
 @dataclass
@@ -493,16 +508,24 @@ def select_vqa_prompt_template(config: Dict[str, Any], vqa_eval_mode: str) -> st
     return VQA_CLOSED_PROMPT_TEMPLATE
 
 
+def finalize_prompt_text(prompt: str) -> str:
+    prompt = str(prompt).strip()
+    if prompt.endswith("<start_of_turn>model"):
+        return prompt + "\n"
+    return prompt
+
+
 def build_vqa_prompt(prompt_template: str, question: str, choices: Dict[str, str]) -> str:
     choices_text = render_choices(choices)
     choices_inline = render_choices_inline(choices)
-    return prompt_template.format(
+    rendered = prompt_template.format(
         question=question,
         choices=choices_text,
         choices_inline=choices_inline,
         answer_options=choices_text,
         answer_options_inline=choices_inline,
-    ).strip()
+    )
+    return finalize_prompt_text(rendered)
 
 
 def normalize_question_type(value: str, choices: Dict[str, str], answer: str) -> str:
@@ -676,7 +699,7 @@ def log_vqa_mode_constraints(samples: Sequence[EvalSample], logger: logging.Logg
         if samples_with_choices or prompts_with_choices:
             logger.warning("Open VQA constraint violation: choices must be hidden for all samples.")
         if prompts_with_answer_cue:
-            logger.warning("Open VQA differs from Med3DVLM prompt: found 'Answer:' cue in %d prompt(s).", prompts_with_answer_cue)
+            logger.info("Open VQA answer cue enabled in %d prompt(s).", prompts_with_answer_cue)
     elif mode == "closed":
         missing_choices = len(samples) - samples_with_choices
         if missing_choices:
@@ -977,10 +1000,10 @@ def safe_filename(value: str) -> str:
 
 
 def with_image_token(prompt: str) -> str:
-    prompt = str(prompt).strip()
+    prompt = finalize_prompt_text(prompt)
     if "<start_of_image>" in prompt:
         return prompt
-    return f"<start_of_image> {prompt}"
+    return finalize_prompt_text(f"<start_of_image> {prompt}")
 
 
 def without_image_token(prompt: str) -> str:
@@ -2035,55 +2058,6 @@ def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
     return mapped
 
 
-def strip_markdown_text(text: str) -> str:
-    text = str(text or "")
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-    text = re.sub(r"__([^_]+)__", r"\1", text)
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    return text
-
-
-def compact_vqa_open_text(prediction: str) -> str:
-    text = strip_markdown_text(clean_generated_text(prediction))
-    if not text:
-        return ""
-
-    text = re.split(
-        r"\n\s*(?:how\s+can\s+you\s+tell|explanation|rationale|reasoning)\b|"
-        r"\n\s*(?:[-*]|\d+[\.)])\s+",
-        text,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0].strip()
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), text).strip()
-    first_line = re.split(r"(?<=[.!?])\s+", first_line, maxsplit=1)[0].strip()
-    first_line = re.sub(r"^[A-Z]\s*[\.\)]\s*", "", first_line).strip()
-    first_line = re.sub(
-        r"^(?:answer\s*(?:is|:)?|the\s+answer\s+is|"
-        r"it\s+is|this\s+is|"
-        r"the\s+image\s+(?:is\s+)?(?:viewed\s+)?(?:in\s+)?(?:the\s+)?|"
-        r"the\s+image\s+shows\s+)",
-        "",
-        first_line,
-        flags=re.IGNORECASE,
-    ).strip()
-    first_line = re.sub(r"^(?:in\s+)?(?:the\s+)?", "", first_line, flags=re.IGNORECASE).strip()
-    return first_line.strip(" \t\r\n.:;,-")
-
-
-def postprocess_open_vqa_prediction(
-    prediction: str,
-    hidden_choices: Optional[Dict[str, str]],
-) -> Tuple[str, Optional[str], bool, float]:
-    concise = compact_vqa_open_text(prediction)
-    choices = hidden_choices or {}
-    if choices and concise:
-        mapped, label, forced, score = force_prediction_to_choice(concise, choices)
-        if label:
-            return mapped, label, forced, score
-    return concise or clean_generated_text(prediction), None, False, 0.0
-
-
 def map_prediction_to_yes_no(prediction: str) -> str:
     text = clean_generated_text(prediction)
     normalized = normalize_answer(text)
@@ -2520,13 +2494,6 @@ def write_predict_debug_text(output_dir: Path, rows: Sequence[Dict[str, Any]]) -
                 handle.write(f"{debug_text_value(row.get('exact_match'))}\n")
                 handle.write("[TOKEN_F1_DEBUG]\n")
                 handle.write(f"{debug_text_value(row.get('token_f1'))}\n")
-                if row.get("open_predicted_choice_label"):
-                    handle.write("[OPEN_POSTPROCESS]\n")
-                    handle.write(
-                        "mapped_to_hidden_choice="
-                        f"{debug_text_value(row.get('open_predicted_choice_label'))}; "
-                        f"score={debug_text_value(row.get('open_choice_match_score'))}\n"
-                    )
                 handle.write("[SCORE_MODE]\n")
                 handle.write("open_text_metrics: use BLEU/ROUGE/METEOR/BERTScore CSV, not this exact-match debug flag.\n")
             else:
@@ -2575,9 +2542,6 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> L
         "choice_match_score",
         "letter_correct",
         "score_mode",
-        "open_predicted_choice_label",
-        "open_prediction_was_mapped_to_hidden_choice",
-        "open_choice_match_score",
         "correct",
         "exact_match",
         "token_f1",
@@ -2622,9 +2586,6 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> L
         "choice_match_score",
         "letter_correct",
         "score_mode",
-        "open_predicted_choice_label",
-        "open_prediction_was_mapped_to_hidden_choice",
-        "open_choice_match_score",
         "correct",
         "exact_match",
         "token_f1",
@@ -3333,7 +3294,6 @@ def evaluate_loop(
     predictions_path = output_dir / "predictions.jsonl"
     errors_path = output_dir / "errors.jsonl"
     image_config = dict(config.get("image") or {})
-    metrics_config = dict(config.get("metrics") or {})
     generation_kwargs = prepare_generation_config(config)
     preview_limit = int((config.get("logging") or {}).get("preview_samples", 3))
     save_errors = bool((config.get("logging") or {}).get("save_errors", True))
@@ -3462,15 +3422,10 @@ def evaluate_loop(
                         correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     else:
                         score_mode = "open_text_metrics"
-                        hidden_choices = (
-                            sample.meta.get("all_choices")
-                            if bool_setting(metrics_config.get("vqa_open_map_hidden_choices"), True)
-                            else None
-                        )
-                        prediction_answer, predicted_choice_label, forced_choice, choice_match_score = postprocess_open_vqa_prediction(
-                            raw_prediction,
-                            hidden_choices if isinstance(hidden_choices, dict) else None,
-                        )
+                        prediction_answer = clean_generated_text(raw_prediction)
+                        predicted_choice_label = None
+                        forced_choice = False
+                        choice_match_score = None
                         letter_correct = None
                         exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
                         correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
@@ -3482,10 +3437,6 @@ def evaluate_loop(
                         base_row["choice_match_score"] = choice_match_score
                         base_row["letter_correct"] = letter_correct
                         base_row["ground_truth_with_choice"] = sample.meta.get("ground_truth_with_choice")
-                    elif sample.meta.get("vqa_eval_mode") == "open":
-                        base_row["open_predicted_choice_label"] = predicted_choice_label
-                        base_row["open_prediction_was_mapped_to_hidden_choice"] = bool(predicted_choice_label)
-                        base_row["open_choice_match_score"] = choice_match_score
                     normalized_prediction = normalize_answer(prediction_answer)
                     normalized_ground_truth = normalize_answer(sample.ground_truth)
                     base_row.update(
