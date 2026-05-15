@@ -106,6 +106,8 @@ bash scripts/eval/eval_vqa.sh 100 closed
 bash scripts/eval/eval_vqa_open.sh 100
 bash scripts/eval/eval_vqa_closed.sh 100
 bash scripts/eval/eval_vqa.sh full
+bash scripts/eval/eval_vqa.sh full open
+bash scripts/eval/eval_vqa.sh full closed
 bash scripts/eval/eval_vqa.sh 100 16 axial montage center_uniform
 
 # Backward-compatible wrapper:
@@ -113,6 +115,9 @@ bash scripts/eval_VQA.sh 100
 ```
 
 `open` and `closed` are evaluation modes, not separate labels in the CSV. The
+`full` command runs a single mode (from `config/VQA_task.yaml`) unless you
+explicitly pass `open` or `closed`.
+The
 M3D-VQA rows include `Question`, `Choice A-D`, `Answer`, and `Answer Choice`.
 In open mode the evaluator hides choices and asks the model to generate the
 answer text, then compares it with `Answer`. In closed mode the evaluator shows
