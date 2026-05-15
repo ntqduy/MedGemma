@@ -11,9 +11,15 @@ CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 # In Med3DVLM/src/dataset/mllm_dataset.py, open VQA is built as:
 #     image_tokens + " " + data["Question"]
 # For MedGemma, <start_of_image> is the image token equivalent.
-VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image> {question}"
+VQA_OPEN_PROMPT_TEMPLATE = (
+    "<start_of_image> {question}\n"
+    "Answer with only the final short answer. Do not explain or list options."
+)
 
-VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image> {question} {choices_inline}"
+VQA_CLOSED_PROMPT_TEMPLATE = (
+    "<start_of_image> {question} {choices_inline}\n"
+    "Answer with only the option letter and option text. Do not explain."
+)
 
 VQA_PROMPT_TEMPLATE = VQA_OPEN_PROMPT_TEMPLATE
 
