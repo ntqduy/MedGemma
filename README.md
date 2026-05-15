@@ -71,24 +71,11 @@ different location.
 
 Run from this directory.
 
-### MedGemma M3D Baseline
+### Main Evaluation Path
 
-Use this entrypoint for the fixed rule-based baseline on M3D-Cap and M3D-VQA.
-It samples user-specified 2D slices from each 3D volume and passes them as
-multi-image input to MedGemma. It uses a grid only when `--slice_grid` is set.
-
-```bash
-python evaluate_medgemma_m3d.py \
-  --model_path weight/medgemma-1.5-4b-it \
-  --cap_json ../M3D-Cap/M3D_Cap/M3D_Cap.json \
-  --vqa_csv ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv \
-  --task both \
-  --num_slices 9 \
-  --slice_strategy center_uniform \
-  --plane axial \
-  --max_samples 100 \
-  --output_dir outputs/medgemma_m3d_eval
-```
+Use the shell scripts for the normal workflow. They call `evaluate.py` with the
+task YAML configs, so prompt, slice selection, generation, metrics, and logging
+are controlled from `config/CAP_task.yaml` and `config/VQA_task.yaml`.
 
 Slice strategies:
 
@@ -96,17 +83,6 @@ Slice strategies:
 middle          -> middle slice only, use with --num_slices 1
 uniform         -> N slices uniformly across the volume axis
 center_uniform  -> N slices centered around the middle slice
-```
-
-Outputs:
-
-```text
-config.json
-run.log
-predictions_cap.jsonl
-predictions_vqa.jsonl
-metrics_cap.json
-metrics_vqa.json
 ```
 
 Captioning:
