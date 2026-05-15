@@ -2149,7 +2149,7 @@ def per_sample_meteor_scores(
         return [None] * len(predictions)
 
 
-def resolve_bertscore_model_type(value: Any, logger: logging.Logger) -> Optional[str]:
+def resolve_bertscore_model_type(value: Any, logger: logging.Logger, local_only: bool = False) -> Optional[str]:
     raw = str(value or "").strip()
     if not raw or raw.lower() in {"none", "null"}:
         return None
@@ -2159,7 +2159,7 @@ def resolve_bertscore_model_type(value: Any, logger: logging.Logger) -> Optional
         if candidate.exists():
             return str(candidate.resolve())
     looks_local = any(sep in raw for sep in ("/", "\\")) or raw.startswith((".", "~")) or ":" in raw
-    if looks_local:
+    if looks_local or local_only:
         logger.warning(
             "BERTScore local model path does not exist: %s. "
             "Download/copy roberta-large there or set metrics.bertscore_model_type to the correct local path.",
@@ -2176,7 +2176,11 @@ def build_bertscore_kwargs(metrics_config: Dict[str, Any], logger: logging.Logge
         "rescale_with_baseline": bool(metrics_config.get("bertscore_rescale_with_baseline", False)),
     }
     if metrics_config.get("bertscore_model_type"):
-        resolved_model_type = resolve_bertscore_model_type(metrics_config.get("bertscore_model_type"), logger)
+        resolved_model_type = resolve_bertscore_model_type(
+            metrics_config.get("bertscore_model_type"),
+            logger,
+            bool_setting(metrics_config.get("bertscore_local_only"), False),
+        )
         if resolved_model_type == "__missing_local_bertscore_model__":
             return None
         if resolved_model_type:
