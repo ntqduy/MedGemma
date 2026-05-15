@@ -22,8 +22,18 @@ processor:
   use_fast: false
 
 slice_inference:
-  num_slices: 1
-  slice_strategy: middle
+  # Rule-based baseline: no adaptive/model-based slice selection.
+  #
+  # Single-slice baseline. Uncomment these lines to run the original middle-slice setup.
+  # num_slices: 1
+  # slice_strategy: middle
+  # view: axial
+  # inference_mode: montage
+  #
+  # Multi-slice montage baseline. Active by default.
+  # num_slices>1 uses uniformly spaced slices and skips 10% at both ends.
+  num_slices: 64
+  slice_strategy: uniform
   view: axial
   inference_mode: montage
 

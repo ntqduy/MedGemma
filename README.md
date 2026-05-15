@@ -76,6 +76,7 @@ Captioning:
 ```bash
 bash scripts/eval_CAP.sh 100 test1k
 bash scripts/eval_CAP.sh full test1k
+bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
 ```
 
 VQA:
@@ -83,6 +84,7 @@ VQA:
 ```bash
 bash scripts/eval_VQA.sh 100
 bash scripts/eval_VQA.sh full
+bash scripts/eval_VQA.sh 100 64 axial montage uniform
 ```
 
 Direct CLI:
@@ -102,10 +104,14 @@ python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
   --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
 ```
 
-The shell scripts forward extra arguments after their positional arguments:
+The shell scripts support a short positional slice form and also forward normal
+CLI flags:
 
 ```bash
+bash scripts/eval_CAP.sh 100 test1k 64 axial montage uniform
 bash scripts/eval_CAP.sh 100 test1k --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
+
+bash scripts/eval_VQA.sh 100 64 axial montage uniform
 bash scripts/eval_VQA.sh 100 --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
 ```
 
@@ -125,7 +131,17 @@ Each run writes `predictions.jsonl`, `metrics.json`, `benchmark.json`,
 The evaluator uses a fixed rule-based slice baseline for 3D volumes. The model
 does not choose slices.
 
-Defaults:
+The current task configs use:
+
+```text
+num_slices: 64
+slice_strategy: uniform
+view: axial
+inference_mode: montage
+```
+
+The evaluator fallback defaults, used only when neither CLI nor config provides
+values, are:
 
 ```text
 --num_slices 1

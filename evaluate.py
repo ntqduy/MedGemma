@@ -1785,14 +1785,18 @@ def build_output_dir(
     output_root: Path,
     split: str,
     sample_label: str,
+    slice_config: Optional[SliceInferenceConfig] = None,
     override: Optional[str] = None,
 ) -> Path:
     if override:
         path = Path(os.path.expandvars(os.path.expanduser(override)))
         return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    slice_label = ""
+    if slice_config is not None:
+        slice_label = f"_S{slice_config.num_slices}_{slice_config.view}_{slice_config.inference_mode}"
     if task == "cap":
-        return output_root / f"EVAL_CAP_{split}_{sample_label}"
-    return output_root / f"EVAL_VQA_{sample_label}"
+        return output_root / f"EVAL_CAP_{split}_{sample_label}{slice_label}"
+    return output_root / f"EVAL_VQA_{sample_label}{slice_label}"
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1818,7 +1822,7 @@ def run(args: argparse.Namespace) -> int:
     if model_path is None:
         raise ValueError("model_path is required in config.")
     output_root = resolve_output_root(config.get("output_root", "results"))
-    output_dir = build_output_dir(task, output_root, split, sample_label, args.output_dir)
+    output_dir = build_output_dir(task, output_root, split, sample_label, slice_config, args.output_dir)
     logging_config = config.get("logging") or {}
     logger = setup_logging(output_dir, bool(logging_config.get("verbose", True)))
 
@@ -1849,6 +1853,10 @@ def run(args: argparse.Namespace) -> int:
     logger.info("Split: %s", split if task == "cap" else "N/A")
     logger.info("Sample count: %s", sample_label)
     logger.info("Slice inference: %s", json.dumps(slice_inference_config_to_dict(slice_config), ensure_ascii=False))
+    logger.info("%-32s %s", "slice_inference.num_slices", slice_config.num_slices)
+    logger.info("%-32s %s", "slice_inference.slice_strategy", slice_config.slice_strategy)
+    logger.info("%-32s %s", "slice_inference.view", slice_config.view)
+    logger.info("%-32s %s", "slice_inference.inference_mode", slice_config.inference_mode)
     logger.info("Result directory: %s", output_dir)
     logger.info("Metric packages: %s", json.dumps(package_status, ensure_ascii=False))
 
