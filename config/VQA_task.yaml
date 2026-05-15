@@ -27,6 +27,9 @@ columns:
   choice_c: Choice C
   choice_d: Choice D
 
+processor:
+  use_fast: false
+
 image:
   slice_axis: auto
 
@@ -98,7 +101,7 @@ metrics:
   bleu: true
   rouge: true
   meteor: true
-  bertscore: true
+  bertscore: false
   bertscore_lang: en
   bertscore_model_type: null
   bertscore_rescale_with_baseline: false

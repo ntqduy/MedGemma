@@ -20,6 +20,7 @@ from evaluate import (
     EvalSample,
     PROJECT_ROOT,
     collect_model_stats,
+    get_processor_use_fast,
     get_package_availability,
     get_requested_device,
     get_torch_dtype,
@@ -392,6 +393,7 @@ def load_processor_and_model(
         str(model_path),
         local_files_only=local_files_only,
         trust_remote_code=trust_remote_code,
+        use_fast=get_processor_use_fast(config),
     )
     tokenizer = getattr(processor, "tokenizer", None)
     if tokenizer is None and AutoTokenizer is not None:

@@ -190,3 +190,11 @@ Transformers.
 
 `bitsandbytes` is skipped on Windows by `requirements.txt`. Quantized 4-bit or
 8-bit loading is recommended on Linux/CUDA environments.
+
+`BERTScore` is disabled by default because it loads a separate text model such
+as `roberta-large` from Hugging Face. Enable `metrics.bertscore: true` only when
+that metric model is already cached locally or the machine has internet access.
+
+`processor.use_fast` is set to `false` in the task configs to keep the saved
+slow image processor behavior explicit and avoid Transformers version-change
+warnings. Set it to `true` only if you intentionally want the fast processor.

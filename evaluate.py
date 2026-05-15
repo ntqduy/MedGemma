@@ -598,6 +598,19 @@ def get_requested_device(torch: Any, device_name: Any) -> str:
     return name
 
 
+def bool_from_config(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def get_processor_use_fast(config: Dict[str, Any]) -> bool:
+    processor_config = dict(config.get("processor") or {})
+    return bool_from_config(processor_config.get("use_fast", config.get("processor_use_fast")), False)
+
+
 def validate_local_model_path(model_path: Path, local_files_only: bool = True) -> None:
     if not local_files_only:
         return
@@ -662,6 +675,7 @@ def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.
             str(model_path),
             local_files_only=local_files_only,
             trust_remote_code=bool(config.get("trust_remote_code", True)),
+            use_fast=get_processor_use_fast(config),
         )
         logger.info("Processor loaded successfully")
 
@@ -758,6 +772,38 @@ def prepare_generation_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return kwargs
 
 
+def first_token_id(*values: Any) -> Optional[Any]:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def add_generation_token_ids(generation_kwargs: Dict[str, Any], bundle: ModelBundle) -> Dict[str, Any]:
+    kwargs = dict(generation_kwargs)
+    tokenizer = bundle.tokenizer
+    generation_config = getattr(bundle.model, "generation_config", None)
+    model_config = getattr(bundle.model, "config", None)
+
+    eos_token_id = first_token_id(
+        getattr(tokenizer, "eos_token_id", None),
+        getattr(generation_config, "eos_token_id", None),
+        getattr(model_config, "eos_token_id", None),
+    )
+    pad_token_id = first_token_id(
+        getattr(tokenizer, "pad_token_id", None),
+        getattr(generation_config, "pad_token_id", None),
+        getattr(model_config, "pad_token_id", None),
+        eos_token_id,
+    )
+
+    if "eos_token_id" not in kwargs and eos_token_id is not None:
+        kwargs["eos_token_id"] = eos_token_id
+    if "pad_token_id" not in kwargs and pad_token_id is not None:
+        kwargs["pad_token_id"] = pad_token_id
+    return kwargs
+
+
 def move_inputs_to_device(inputs: Any, bundle: ModelBundle) -> Any:
     torch = bundle.torch
     if hasattr(inputs, "to"):
@@ -788,6 +834,7 @@ def generate_prediction(
     processor = bundle.processor
     inputs = processor(text=prompt, images=image, return_tensors="pt")
     inputs = move_inputs_to_device(inputs, bundle)
+    generation_kwargs = add_generation_token_ids(generation_kwargs, bundle)
     input_len = int(inputs["input_ids"].shape[-1]) if "input_ids" in inputs else 0
 
     if torch.cuda.is_available():
