@@ -9,7 +9,8 @@ max_samples: null
 model_path: weight/medgemma-1.5-4b-it
 output_root: results
 
-device: "cuda:0"
+cuda_visible_devices: "0,1,2,3,4,5,6,7"
+device: auto
 device_map: auto
 dtype: bfloat16
 local_files_only: true

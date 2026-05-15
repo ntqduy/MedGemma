@@ -959,6 +959,26 @@ def get_requested_device(torch: Any, device_name: Any) -> str:
     return name
 
 
+def apply_cuda_visible_devices_config(config: Dict[str, Any], logger: logging.Logger) -> None:
+    env_value = os.environ.get("CUDA_VISIBLE_DEVICES")
+    configured = config.get("cuda_visible_devices", config.get("gpu_ids"))
+    if env_value:
+        logger.info("CUDA_VISIBLE_DEVICES already set by environment: %s", env_value)
+        return
+    if configured in (None, "", "auto"):
+        logger.info("CUDA_VISIBLE_DEVICES controlled by system/default environment")
+        return
+    if isinstance(configured, (list, tuple)):
+        value = ",".join(str(item).strip() for item in configured if str(item).strip())
+    else:
+        value = str(configured).strip()
+    if not value:
+        logger.info("CUDA_VISIBLE_DEVICES controlled by system/default environment")
+        return
+    os.environ["CUDA_VISIBLE_DEVICES"] = value
+    logger.info("Set CUDA_VISIBLE_DEVICES from config: %s", value)
+
+
 def bool_from_config(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -1089,6 +1109,9 @@ def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.
         dtype = get_torch_dtype(torch, config.get("dtype", "auto"))
         local_files_only = bool(config.get("local_files_only", True))
         validate_local_model_path(model_path, local_files_only)
+        cuda_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        logger.info("CUDA_VISIBLE_DEVICES: %s", os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"))
+        logger.info("CUDA device count visible to process: %s", cuda_count)
 
         processor = AutoProcessor.from_pretrained(
             str(model_path),
@@ -1115,6 +1138,8 @@ def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.
         device_map = config.get("device_map", "auto")
         if device_name != "cpu" and device_map:
             model_kwargs["device_map"] = device_map
+        logger.info("Requested device: %s", device_name)
+        logger.info("Requested device_map: %s", device_map)
 
         if AutoModelForImageTextToText is None:
             from transformers import AutoModelForVision2Seq  # type: ignore
@@ -2243,6 +2268,7 @@ def run(args: argparse.Namespace) -> int:
     output_dir = build_output_dir(task, output_root, split, sample_label, slice_config, args.output_dir)
     logging_config = config.get("logging") or {}
     logger = setup_logging(output_dir, bool(logging_config.get("verbose", True)))
+    apply_cuda_visible_devices_config(config, logger)
 
     runtime_config = dict(config)
     runtime_config.update(

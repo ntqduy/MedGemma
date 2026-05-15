@@ -101,6 +101,34 @@ bash scripts/eval_VQA.sh full
 bash scripts/eval_VQA.sh 100 9 axial montage center_uniform
 ```
 
+Multi-GPU:
+
+```bash
+# By default, edit cuda_visible_devices in config/CAP_task.yaml or config/VQA_task.yaml.
+bash scripts/eval_CAP.sh 100 test1k
+bash scripts/eval_VQA.sh 100
+
+# Temporary env override for one run.
+CUDA_DEVICE_IDS=0,1 bash scripts/eval_CAP.sh 100 test1k
+CUDA_DEVICE_IDS=0,1 bash scripts/eval_VQA.sh 100
+
+# If you run CAP and VQA at the same time, pin them to different GPUs.
+CUDA_DEVICE_IDS=1 bash scripts/eval_CAP.sh 100 test1k
+CUDA_DEVICE_IDS=0 bash scripts/eval_VQA.sh 100
+```
+
+The task configs use:
+
+```yaml
+cuda_visible_devices: "0,1,2,3,4,5,6,7"
+device: auto
+device_map: auto
+```
+
+Transformers / Accelerate can shard the model over all GPUs listed in
+`cuda_visible_devices`. If `CUDA_VISIBLE_DEVICES` or `CUDA_DEVICE_IDS` is set in
+the shell, that environment value overrides the config for that run.
+
 Direct CLI:
 
 ```bash

@@ -6,9 +6,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SAMPLE="${1:-100}"
 SPLIT="${2:-test1k}"
-GPU_ID="${CUDA_DEVICE_ID:-1}"
+GPU_IDS="${CUDA_DEVICE_IDS:-${CUDA_DEVICE_ID:-}}"
 
-export CUDA_VISIBLE_DEVICES="${GPU_ID}"
+if [ -n "${GPU_IDS}" ]; then
+  export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
+fi
 
 EXTRA_ARGS=()
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
@@ -22,8 +24,9 @@ Examples:
   bash scripts/eval_CAP.sh 1 test1k --num_slices 9 --view axial --inference_mode montage --slice_strategy center_uniform
 
 GPU:
-  Default physical GPU: 1
-  Override: CUDA_DEVICE_ID=0 bash scripts/eval_CAP.sh 1 test1k
+  Default: use cuda_visible_devices from config/CAP_task.yaml
+  Multi-GPU override: CUDA_DEVICE_IDS=0,1 bash scripts/eval_CAP.sh 1 test1k
+  Single-GPU override: CUDA_DEVICE_IDS=1 bash scripts/eval_CAP.sh 1 test1k
 USAGE
   exit 0
 fi
@@ -46,7 +49,7 @@ elif [ "$#" -gt 2 ]; then
   EXTRA_ARGS=("${@:3}")
 fi
 
-echo "[eval_CAP] physical_gpu=${GPU_ID} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
+echo "[eval_CAP] env_physical_gpus=${GPU_IDS:-<from config>} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
 echo "[eval_CAP] sample=${SAMPLE} split=${SPLIT} extra_args=${EXTRA_ARGS[*]:-<from config>}"
 
 python "${PROJECT_ROOT}/evaluate.py" \
