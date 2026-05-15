@@ -20,11 +20,9 @@ trust_remote_code: true
 
 prompt_template: null
 prompt_templates:
-  # Open mirrors Med3DVLM's information boundary: image token + raw question, no choices.
-  # The turn markers follow MedGemma's original chat template.
-  open: "<start_of_turn>user\n<start_of_image>Answer the following medical visual question based only on the image.\nQuestion: {question}\nGive the final answer only. Do not explain or ask a follow-up question.\nAnswer:<end_of_turn>\n<start_of_turn>model\n"
-  # Closed mirrors Med3DVLM's information boundary: same question plus answer choices.
-  closed: "<start_of_turn>user\n<start_of_image>Answer the following medical visual question based only on the image.\nQuestion: {question}\n{choices}\nSelect the best option and give the option letter with the answer text only.\nAnswer:<end_of_turn>\n<start_of_turn>model\n"
+  # Med3DVLM style: image token + question; closed adds inline choices.
+  open: "<start_of_image>{question}"
+  closed: "<start_of_image>{question} {choices_inline}"
 
 columns:
   image: Image Path

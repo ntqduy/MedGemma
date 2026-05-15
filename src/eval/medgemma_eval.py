@@ -642,6 +642,7 @@ def load_vqa_samples(
                     "vqa_eval_mode": vqa_eval_mode,
                     "all_choices": all_choices,
                     "ground_truth_with_choice": answer_with_choice,
+                    "prompt_template": prompt_template,
                 },
             )
         )
@@ -1036,7 +1037,13 @@ def build_montage_prompt(
     num_slices: int,
 ) -> str:
     if task == "vqa":
-        return with_image_token(sample.prompt or vqa_question_block(sample))
+        prefix = (
+            f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
+            "medical volume, ordered from first to last slice. Answer based only on visible findings."
+        )
+        question = f"{prefix}\n{sample.question}".strip()
+        prompt_template = str(sample.meta.get("prompt_template") or VQA_OPEN_PROMPT_TEMPLATE)
+        return with_image_token(build_vqa_prompt(prompt_template, question, sample.choices))
     return with_image_token(
         f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
         "medical volume, ordered from first to last slice. Generate a concise radiology-style caption "
@@ -1058,7 +1065,9 @@ def build_independent_prompt(
         f"This is slice {ordinal + 1} of {num_slices}, selected by a fixed rule at slice index {slice_index}."
     )
     if task == "vqa":
-        return with_image_token(sample.prompt or vqa_question_block(sample))
+        question = f"{prefix}\n{sample.question}".strip()
+        prompt_template = str(sample.meta.get("prompt_template") or VQA_OPEN_PROMPT_TEMPLATE)
+        return with_image_token(build_vqa_prompt(prompt_template, question, sample.choices))
     return with_image_token(
         f"{prefix} Generate a concise radiology-style caption describing only visible imaging findings. "
         "Do not infer patient history or findings not visible in the image."
