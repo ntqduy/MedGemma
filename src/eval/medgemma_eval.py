@@ -1563,7 +1563,40 @@ def resolve_vqa_open_eval_style(metrics_config: Dict[str, Any]) -> str:
     return "med3dvlm"
 
 
-def med3dvlm_row_metrics(prediction: str, reference: str, bundle: Dict[str, Any]) -> Dict[str, Optional[float]]:
+def build_med3dvlm_bertscore_kwargs(
+    metrics_config: Dict[str, Any],
+    logger: logging.Logger,
+) -> Optional[Dict[str, Any]]:
+    if not bool_setting(metrics_config.get("bertscore"), True):
+        return None
+    kwargs: Dict[str, Any] = {
+        "lang": str(metrics_config.get("bertscore_lang", "en")),
+        "rescale_with_baseline": bool(metrics_config.get("bertscore_rescale_with_baseline", False)),
+    }
+    if metrics_config.get("bertscore_model_type"):
+        resolved_model_type = resolve_bertscore_model_type(
+            metrics_config.get("bertscore_model_type"),
+            logger,
+            bool_setting(metrics_config.get("bertscore_local_only"), False),
+        )
+        if resolved_model_type == "__missing_local_bertscore_model__":
+            return None
+        if resolved_model_type:
+            kwargs["model_type"] = resolved_model_type
+    if metrics_config.get("bertscore_num_layers") is not None:
+        kwargs["num_layers"] = int(metrics_config.get("bertscore_num_layers"))
+    if metrics_config.get("bertscore_device"):
+        kwargs["device"] = str(metrics_config.get("bertscore_device"))
+    return kwargs
+
+
+def med3dvlm_row_metrics(
+    prediction: str,
+    reference: str,
+    bundle: Dict[str, Any],
+    metrics_config: Dict[str, Any],
+    logger: logging.Logger,
+) -> Dict[str, Optional[float]]:
     decoded_preds = [str(prediction).strip()]
     decoded_labels = [[str(reference).strip()]]
 
@@ -1574,9 +1607,16 @@ def med3dvlm_row_metrics(prediction: str, reference: str, bundle: Dict[str, Any]
         rouge_types=["rouge1"],
     )
     meteor_score = bundle["meteor"].compute(predictions=decoded_preds, references=decoded_labels)
-    bert_score = bundle["bertscore"].compute(predictions=decoded_preds, references=decoded_labels, lang="en")
-    f1_values = bert_score.get("f1") or []
-    f1_mean = float(sum(f1_values) / len(f1_values)) if f1_values else None
+    f1_mean = None
+    bertscore_kwargs = build_med3dvlm_bertscore_kwargs(metrics_config, logger)
+    if bertscore_kwargs is not None:
+        bert_score = bundle["bertscore"].compute(
+            predictions=decoded_preds,
+            references=decoded_labels,
+            **bertscore_kwargs,
+        )
+        f1_values = bert_score.get("f1") or []
+        f1_mean = float(sum(f1_values) / len(f1_values)) if f1_values else None
 
     return {
         "bleu": float(bleu_score.get("bleu", 0.0)),
@@ -1589,6 +1629,7 @@ def med3dvlm_row_metrics(prediction: str, reference: str, bundle: Dict[str, Any]
 def compute_text_metrics_med3dvlm(
     predictions: Sequence[str],
     references: Sequence[str],
+    metrics_config: Dict[str, Any],
     logger: logging.Logger,
 ) -> Dict[str, Any]:
     bundle = med3dvlm_eval_bundle(logger)
@@ -1604,10 +1645,19 @@ def compute_text_metrics_med3dvlm(
         rouge_types=["rouge1"],
     )
     meteor_score = bundle["meteor"].compute(predictions=decoded_preds, references=decoded_labels)
-    bert_score = bundle["bertscore"].compute(predictions=decoded_preds, references=decoded_labels, lang="en")
-    f1_values = bert_score.get("f1") or []
-    precision_values = bert_score.get("precision") or []
-    recall_values = bert_score.get("recall") or []
+    f1_values: List[float] = []
+    precision_values: List[float] = []
+    recall_values: List[float] = []
+    bertscore_kwargs = build_med3dvlm_bertscore_kwargs(metrics_config, logger)
+    if bertscore_kwargs is not None:
+        bert_score = bundle["bertscore"].compute(
+            predictions=decoded_preds,
+            references=decoded_labels,
+            **bertscore_kwargs,
+        )
+        f1_values = bert_score.get("f1") or []
+        precision_values = bert_score.get("precision") or []
+        recall_values = bert_score.get("recall") or []
 
     metrics: Dict[str, Any] = {
         "BLEU-1": float(bleu_score.get("bleu", 0.0)),
@@ -1625,6 +1675,7 @@ def compute_text_metrics_med3dvlm(
 
 def compute_vqa_med3dvlm_metrics(
     rows: Sequence[Dict[str, Any]],
+    metrics_config: Dict[str, Any],
     logger: logging.Logger,
 ) -> Optional[Dict[str, Any]]:
     if not rows:
@@ -1643,7 +1694,7 @@ def compute_vqa_med3dvlm_metrics(
     if open_rows:
         predictions = [str(row.get("prediction", "")) for row in open_rows]
         references = [str(row.get("ground_truth", "")) for row in open_rows]
-        metrics["open_text_metrics"] = compute_text_metrics_med3dvlm(predictions, references, logger)
+        metrics["open_text_metrics"] = compute_text_metrics_med3dvlm(predictions, references, metrics_config, logger)
     return metrics
 
 
@@ -2235,7 +2286,16 @@ def build_row_metric_cache(
         if bundle is None:
             logger.warning("Falling back to legacy row metrics for VQA open.")
         else:
-            return [med3dvlm_row_metrics(row.get("prediction", ""), row.get("ground_truth", ""), bundle) for row in rows]
+            return [
+                med3dvlm_row_metrics(
+                    row.get("prediction", ""),
+                    row.get("ground_truth", ""),
+                    bundle,
+                    metrics_config,
+                    logger,
+                )
+                for row in rows
+            ]
     predictions = [str(row.get("prediction", "")) for row in rows]
     references = [str(row.get("ground_truth", "")) for row in rows]
     meteor_values = (
@@ -2544,6 +2604,54 @@ def write_vqa_open_question_type_summary_csv(
     return output_path
 
 
+def write_vqa_closed_text_question_type_summary_csv(
+    output_dir: Path,
+    model_name: str,
+    rows: Sequence[Dict[str, Any]],
+    row_metrics: Sequence[Dict[str, Optional[float]]],
+) -> Path:
+    output_path = output_dir / f"{model_name}_eval_close_vqa_text_by_question_type.csv"
+    metric_names = ["bleu", "rouge1", "meteor", "bert_f1"]
+    grouped = group_rows_by_question_type(rows, row_metrics)
+    type_summaries: List[Dict[str, Any]] = []
+    for type_id in sorted(grouped.keys(), key=question_type_sort_key):
+        pairs = grouped[type_id]
+        summary = {
+            "Question Type": type_id,
+            "Question Type Name": VQA_QUESTION_TYPE_NAMES.get(type_id, type_id),
+            "Count": len(pairs),
+        }
+        for metric_name in metric_names:
+            summary[metric_name] = mean_optional([metric.get(metric_name) for _, metric in pairs])
+        type_summaries.append(summary)
+
+    macro_summary = {
+        "Question Type": "macro_mean",
+        "Question Type Name": "Mean over question types",
+        "Count": len(type_summaries),
+    }
+    for metric_name in metric_names:
+        macro_summary[metric_name] = mean_optional([summary.get(metric_name) for summary in type_summaries])
+
+    micro_summary = {
+        "Question Type": "micro_total",
+        "Question Type Name": "All samples",
+        "Count": len(rows),
+    }
+    for metric_name in metric_names:
+        micro_summary[metric_name] = mean_optional([metric.get(metric_name) for metric in row_metrics])
+
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["Question Type", "Question Type Name", "Count", *metric_names],
+        )
+        writer.writeheader()
+        for summary in [*type_summaries, macro_summary, micro_summary]:
+            writer.writerow({key: csv_metric_value(value) for key, value in summary.items()})
+    return output_path
+
+
 def vqa_question_type_metric_means(
     rows: Sequence[Dict[str, Any]],
     row_metrics: Sequence[Dict[str, Optional[float]]],
@@ -2689,6 +2797,7 @@ def write_vqa_question_type_summary_csv(
         return [
             write_vqa_closed_question_type_summary_csv(output_dir, model_name, rows, row_metrics),
             write_vqa_closed_question_type_table_csv(output_dir, model_name, rows, row_metrics),
+            write_vqa_closed_text_question_type_summary_csv(output_dir, model_name, rows, row_metrics),
         ]
     return [
         write_vqa_open_question_type_summary_csv(output_dir, model_name, rows, row_metrics),
@@ -2820,7 +2929,7 @@ def write_eval_exports(
         logger.info("Saved extra metrics: %s", output_dir / "metrics_extra.json")
 
     if task == "vqa" and bool_setting(metrics_config.get("export_med3dvlm_metrics"), True):
-        med3dvlm_metrics = compute_vqa_med3dvlm_metrics(rows, logger)
+        med3dvlm_metrics = compute_vqa_med3dvlm_metrics(rows, metrics_config, logger)
         if med3dvlm_metrics is not None:
             output_path = output_dir / "metrics_med3dvlm.json"
             write_json(output_path, med3dvlm_metrics)
