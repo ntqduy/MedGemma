@@ -1189,6 +1189,17 @@ def add_generation_token_ids(generation_kwargs: Dict[str, Any], bundle: ModelBun
     return kwargs
 
 
+def clean_generated_text(text: str) -> str:
+    text = str(text or "").replace("\r", "\n").strip()
+    if "<end_of_turn>" in text:
+        text = text.split("<end_of_turn>", 1)[0]
+    text = re.sub(r"</?(?:s|pad|bos|eos)>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<(?:start|end)_of_turn>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^```(?:\w+)?", "", text).strip()
+    text = re.sub(r"```$", "", text).strip()
+    return text.strip()
+
+
 def move_inputs_to_device(inputs: Any, bundle: ModelBundle) -> Any:
     torch = bundle.torch
     if hasattr(inputs, "to"):
@@ -1241,7 +1252,7 @@ def generate_prediction(
     if decoder is None:
         raise RuntimeError("Neither processor nor tokenizer exposes decode().")
     text = decoder(sequence, skip_special_tokens=True)
-    return str(text).strip(), elapsed, generated_tokens
+    return clean_generated_text(text), elapsed, generated_tokens
 
 
 def metric_tokens(text: str) -> List[str]:
@@ -1490,24 +1501,44 @@ def exact_normalize(text: str) -> str:
     return text
 
 
-def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
-    text = str(prediction).strip()
+def extract_choice_label(prediction: str, choices: Dict[str, str]) -> Optional[str]:
     if not choices:
-        return text
-    short = text.strip().upper().strip(".:()[]{} ")
+        return None
+    text = clean_generated_text(prediction)
+    short = text.strip().upper().strip(".:()[]{}$ ")
     if short in choices:
-        return choices[short]
+        return short
 
     patterns = [
+        r"\\boxed\s*\{?\s*([A-Ea-e])\s*\}?",
+        r"(?:final\s+answer|answer|option|choice)\s*(?:is|:)?[^A-Ea-e]{0,40}\b([A-Ea-e])\b",
         r"^\s*(?:answer\s*[:\-]?\s*)?\(?([A-Ea-e])\)?(?:[\.\):\s]|$)",
-        r"\b(?:answer|option|choice)\s*(?:is|:)?\s*\(?([A-Ea-e])\)?\b",
+        r"\b([A-Ea-e])\s*[\.\)]\s*[A-Za-z0-9]",
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
             letter = match.group(1).upper()
             if letter in choices:
-                return choices[letter]
+                return letter
+
+    normalized_text = normalize_answer(text)
+    for letter, choice_text in choices.items():
+        normalized_choice = normalize_answer(choice_text)
+        if normalized_text == normalized_choice:
+            return letter
+        if normalized_choice and normalized_choice in normalized_text:
+            return letter
+    return None
+
+
+def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
+    text = clean_generated_text(prediction)
+    if not choices:
+        return text
+    label = extract_choice_label(text, choices)
+    if label:
+        return choices[label]
 
     normalized_text = normalize_answer(text)
     for letter, choice_text in choices.items():
@@ -1516,6 +1547,16 @@ def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
             return choice_text
         if normalized_choice and normalized_choice in normalized_text:
             return choice_text
+    return text
+
+
+def map_prediction_to_yes_no(prediction: str) -> str:
+    text = clean_generated_text(prediction)
+    normalized = normalize_answer(text)
+    if re.search(r"\bno\b", normalized):
+        return "no"
+    if re.search(r"\byes\b", normalized):
+        return "yes"
     return text
 
 
@@ -1827,6 +1868,7 @@ def evaluate_loop(
 
                 inference_times.append(elapsed)
                 total_generated_tokens += generated_tokens
+                raw_prediction = prediction
 
                 base_row: Dict[str, Any] = {
                     "sample_id": sample.sample_id,
@@ -1850,7 +1892,16 @@ def evaluate_loop(
                 if task == "cap":
                     base_row["split"] = sample.split
                 else:
-                    prediction_answer = map_prediction_to_choice(prediction, sample.choices)
+                    if sample.choices:
+                        prediction_answer = map_prediction_to_choice(raw_prediction, sample.choices)
+                    elif normalize_answer(sample.ground_truth) in {"yes", "no"}:
+                        prediction_answer = map_prediction_to_yes_no(raw_prediction)
+                    else:
+                        prediction_answer = clean_generated_text(raw_prediction)
+                    base_row["raw_prediction"] = raw_prediction
+                    base_row["prediction"] = prediction_answer
+                    if sample.choices:
+                        base_row["predicted_choice_label"] = extract_choice_label(raw_prediction, sample.choices)
                     normalized_prediction = normalize_answer(prediction_answer)
                     normalized_ground_truth = normalize_answer(sample.ground_truth)
                     exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
