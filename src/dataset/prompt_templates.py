@@ -12,15 +12,7 @@ CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 #   closed: <start_of_image> + Question + "Choices: A... B... C... D..."
 # Add an explicit answer cue to reduce echoing the question.
 VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image>{question}\nAnswer:"
-VQA_CLOSED_PROMPT_TEMPLATE = (
-    "<start_of_turn>user\n"
-    "<start_of_image>Answer the following medical visual question based only on the image.\n"
-    "Question: {question}\n"
-    "{choices}\n"
-    "Select the best option and give the option letter with the answer text only.\n"
-    "Answer:<end_of_turn>\n"
-    "<start_of_turn>model\n"
-)
+VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image>{question} {choices_inline} Answer with one of the provided choice texts only (no option letter, no extra words)."
 VQA_PROMPT_TEMPLATE = VQA_OPEN_PROMPT_TEMPLATE
 
 Caption_templates = [
