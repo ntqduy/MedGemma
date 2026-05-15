@@ -21,8 +21,9 @@ trust_remote_code: true
 prompt_template: null
 prompt_templates:
   # Med3DVLM style: image token + question; closed adds inline choices.
-  open: "<start_of_image>{question}"
-  closed: "<start_of_image>{question} {choices_inline}"
+  # Add an explicit answer cue to reduce echoing the question.
+  open: "<start_of_image>{question}\nAnswer:"
+  closed: "<start_of_image>{question} {choices_inline}\nAnswer:"
 
 columns:
   image: Image Path

@@ -10,8 +10,9 @@ CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 # Med3DVLM VQA builds prompts from raw dataset fields:
 #   open:   <start_of_image> + Question
 #   closed: <start_of_image> + Question + "Choices: A... B... C... D..."
-VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image>{question}"
-VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image>{question} {choices_inline}"
+# Add an explicit answer cue to reduce echoing the question.
+VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image>{question}\nAnswer:"
+VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image>{question} {choices_inline}\nAnswer:"
 VQA_PROMPT_TEMPLATE = VQA_OPEN_PROMPT_TEMPLATE
 
 Caption_templates = [

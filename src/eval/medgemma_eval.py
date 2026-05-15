@@ -489,6 +489,17 @@ def render_choices_inline(choices: Dict[str, str]) -> str:
     return "Choices: " + " ".join(parts)
 
 
+def strip_choices_from_question(question: str, choices: Dict[str, str]) -> str:
+    text = str(question or "").strip()
+    if not text or not choices:
+        return text
+    if "Choices:" in text:
+        return text.split("Choices:", 1)[0].strip()
+    if re.search(r"\bA\.\s", text) and re.search(r"\bB\.\s", text):
+        return re.split(r"\bA\.\s", text, maxsplit=1)[0].strip()
+    return text
+
+
 def select_vqa_prompt_template(config: Dict[str, Any], vqa_eval_mode: str) -> str:
     prompt_templates = config.get("prompt_templates")
     if isinstance(prompt_templates, dict):
@@ -610,6 +621,8 @@ def load_vqa_samples(
             if label and value and label not in all_choices:
                 all_choices[label] = value
         choices = dict(all_choices) if vqa_eval_mode == "closed" else {}
+        if vqa_eval_mode == "open":
+            question = strip_choices_from_question(question, all_choices)
         answer_type = "closed" if choices else normalize_question_type("", choices, answer)
         if not answer and answer_choice in all_choices:
             answer = all_choices[answer_choice]
