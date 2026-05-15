@@ -117,6 +117,8 @@ fine_tuning:
 
 metrics:
   export_med3dvlm_csv: true
+  export_med3dvlm_metrics: false
+  vqa_open_eval_style: legacy
   export_extra_metrics_file: true
   legacy_row_bertscore: true
   group_metrics: true
