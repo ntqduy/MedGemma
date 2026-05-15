@@ -1640,6 +1640,12 @@ def compute_task_metrics(
             for row in rows
             if not row.get("choices") and str(row.get("normalized_ground_truth", "")).strip().lower() not in {"yes", "no"}
         ]
+        metrics["Multiple Choice Samples"] = len(multiple_choice_rows)
+        metrics["Yes/No Samples"] = len(yes_no_rows)
+        metrics["Open Samples"] = len(open_rows)
+        metrics["Multiple Choice Correct"] = sum(bool(row.get("correct", False)) for row in multiple_choice_rows)
+        metrics["Yes/No Correct"] = sum(bool(row.get("correct", False)) for row in yes_no_rows)
+        metrics["Open Exact Match Correct"] = sum(bool(row.get("exact_match", False)) for row in open_rows)
         metrics["Exact Match Accuracy"] = float(statistics.mean(exact_matches)) if rows else None
         metrics["Normalized Accuracy"] = float(statistics.mean(normalized_matches)) if rows else None
         metrics["Token-level F1"] = float(statistics.mean(f1_scores)) if rows else None
@@ -1953,18 +1959,129 @@ def write_previews(output_dir: Path, previews: Sequence[Dict[str, Any]], task: s
     (output_dir / "samples_preview.txt").write_text(text + ("\n" if text else ""), encoding="utf-8")
 
 
+def metric_display(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    if isinstance(value, float):
+        return f"{value:.4f}"
+    return str(value)
+
+
+def log_summary_row(logger: logging.Logger, label: str, value: Any, note: str = "") -> None:
+    suffix = f"  {note}" if note else ""
+    logger.info("  %-30s %s%s", label, metric_display(value), suffix)
+
+
+def log_accuracy_row(
+    logger: logging.Logger,
+    label: str,
+    accuracy: Any,
+    correct: Any,
+    total: Any,
+) -> None:
+    if total is None or int(total) == 0:
+        log_summary_row(logger, label, None, "(0 samples)")
+        return
+    log_summary_row(logger, label, accuracy, f"({correct}/{total})")
+
+
 def log_metric_summary(metrics: Dict[str, Any], logger: logging.Logger) -> None:
-    logger.info("Metric summary:")
-    logger.info("%-32s %s", "metric", "value")
-    logger.info("%-32s %s", "-" * 32, "-" * 16)
-    for key, value in metrics.items():
-        if isinstance(value, dict):
-            for sub_key, sub_value in value.items():
-                if isinstance(sub_value, (dict, list)):
-                    continue
-                logger.info("%-32s %s", f"{key}.{sub_key}", sub_value)
-        else:
-            logger.info("%-32s %s", key, value)
+    task = str(metrics.get("task") or "").lower()
+    logger.info("Metric summary (%s)", task.upper() if task else "UNKNOWN")
+
+    logger.info("Samples:")
+    log_summary_row(logger, "successful", metrics.get("num_successful_samples"))
+    log_summary_row(logger, "requested", metrics.get("num_requested_samples"))
+    log_summary_row(logger, "failed", metrics.get("num_failed_samples"))
+    if task == "vqa":
+        log_summary_row(logger, "multiple_choice", metrics.get("Multiple Choice Samples", 0))
+        log_summary_row(logger, "yes_no", metrics.get("Yes/No Samples", 0))
+        log_summary_row(logger, "open_ended", metrics.get("Open Samples", 0))
+
+    if task == "vqa":
+        logger.info("VQA core metrics:")
+        total = metrics.get("num_successful_samples", 0)
+        normalized_correct = None
+        if metrics.get("Normalized Accuracy") is not None and total:
+            normalized_correct = round(float(metrics["Normalized Accuracy"]) * int(total))
+        log_accuracy_row(logger, "overall_normalized_acc", metrics.get("Normalized Accuracy"), normalized_correct, total)
+        log_summary_row(logger, "overall_exact_match", metrics.get("Exact Match Accuracy"))
+        log_summary_row(logger, "overall_token_f1", metrics.get("Token-level F1"))
+        log_accuracy_row(
+            logger,
+            "multiple_choice_acc",
+            metrics.get("Multiple Choice Accuracy"),
+            metrics.get("Multiple Choice Correct", 0),
+            metrics.get("Multiple Choice Samples", 0),
+        )
+        log_accuracy_row(
+            logger,
+            "yes_no_acc",
+            metrics.get("Yes/No Accuracy"),
+            metrics.get("Yes/No Correct", 0),
+            metrics.get("Yes/No Samples", 0),
+        )
+        open_sample_count = metrics.get("Open Samples", 0)
+        log_accuracy_row(
+            logger,
+            "open_exact_match_acc",
+            metrics.get("Open Exact Match Accuracy"),
+            metrics.get("Open Exact Match Correct", 0),
+            open_sample_count,
+        )
+        log_summary_row(
+            logger,
+            "open_token_f1",
+            metrics.get("Open Token-level F1"),
+            "(0 samples)" if int(open_sample_count or 0) == 0 else "",
+        )
+
+    logger.info("Text metrics%s:", " (secondary for VQA; best for open-ended answers)" if task == "vqa" else "")
+    for key in ["BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4", "ROUGE-1", "ROUGE-2", "ROUGE-L", "METEOR"]:
+        if key in metrics:
+            log_summary_row(logger, key, metrics.get(key))
+    bertscore = metrics.get("BERTScore")
+    if isinstance(bertscore, dict):
+        log_summary_row(logger, "BERTScore_F1", bertscore.get("F1"))
+        log_summary_row(logger, "BERTScore_Precision", bertscore.get("Precision"))
+        log_summary_row(logger, "BERTScore_Recall", bertscore.get("Recall"))
+    elif "BERTScore" in metrics:
+        log_summary_row(logger, "BERTScore", bertscore, "(not computed)")
+    for key in ["CIDEr", "SPICE"]:
+        if key in metrics:
+            note = "(requires official pycocoevalcap)" if metrics.get(key) is None else ""
+            log_summary_row(logger, key, metrics.get(key), note)
+
+    slice_info = metrics.get("slice_inference")
+    if isinstance(slice_info, dict):
+        logger.info("Slice inference:")
+        for key in ["num_slices", "slice_strategy", "view", "inference_mode"]:
+            log_summary_row(logger, key, slice_info.get(key))
+
+    runtime = metrics.get("Runtime")
+    if isinstance(runtime, dict):
+        logger.info("Runtime:")
+        for key in [
+            "model_load_time_sec",
+            "total_inference_time_sec",
+            "avg_inference_latency_sec",
+            "throughput_samples_per_sec",
+            "total_generated_tokens",
+            "avg_generated_tokens",
+        ]:
+            log_summary_row(logger, key, runtime.get(key))
+
+    params = metrics.get("Parameters")
+    if isinstance(params, dict):
+        logger.info("Model:")
+        for key in ["total_params", "trainable_params", "parameter_dtype"]:
+            log_summary_row(logger, key, params.get(key))
+
+    flops = metrics.get("FLOPs")
+    if isinstance(flops, dict):
+        logger.info("Compute estimate:")
+        for key in ["approx_total_flops", "approx_flops_per_sample"]:
+            log_summary_row(logger, key, flops.get(key))
 
 
 def build_output_dir(
