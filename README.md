@@ -290,7 +290,9 @@ Transformers.
 `BERTScore` loads a separate text model, not the MedGemma weights. The configs
 point `metrics.bertscore_model_type` to `weight/roberta-large`; copy/download a
 complete Hugging Face `roberta-large` folder there, or change that config value
-to the absolute local path of your cached snapshot.
+to the absolute local path of your cached snapshot. When using local
+`roberta-large`, keep `metrics.bertscore_num_layers: 17` so `bert-score` does
+not try to look up the local path as a built-in model name.
 
 `processor.use_fast` is set to `false` in the task configs to keep the saved
 slow image processor behavior explicit and avoid Transformers version-change

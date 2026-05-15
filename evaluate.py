@@ -1410,6 +1410,13 @@ def bertscore_safe(
                 return None
             if resolved_model_type:
                 kwargs["model_type"] = resolved_model_type
+        if metrics_config.get("bertscore_num_layers") is not None:
+            kwargs["num_layers"] = int(metrics_config.get("bertscore_num_layers"))
+        elif kwargs.get("model_type") and Path(str(kwargs["model_type"])).exists():
+            model_path_name = Path(str(kwargs["model_type"])).name.lower()
+            if model_path_name == "roberta-large":
+                kwargs["num_layers"] = 17
+                logger.info("BERTScore local roberta-large detected; using num_layers=17")
         if metrics_config.get("bertscore_device"):
             kwargs["device"] = str(metrics_config.get("bertscore_device"))
         precision, recall, f1 = bert_score(list(predictions), list(references), **kwargs)

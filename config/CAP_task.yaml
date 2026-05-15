@@ -110,6 +110,7 @@ metrics:
   bertscore: true
   bertscore_lang: en
   bertscore_model_type: weight/roberta-large
+  bertscore_num_layers: 17
   bertscore_rescale_with_baseline: false
   cider: true
   spice: true
