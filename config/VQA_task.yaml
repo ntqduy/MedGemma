@@ -2,7 +2,7 @@ task_name: visual_question_answering
 task: vqa
 vqa_eval_mode: open
 
-dataset_path: ../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv
+dataset_path: ../M3D-VQA/M3D_VQA/M3D_VQA_test5k.csv
 image_root: ../M3D-Cap
 sample: full
 max_samples: null
