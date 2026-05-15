@@ -20,11 +20,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         return train_main(args[1:])
     if args and args[0] in {"eval", "evaluate"}:
-        from evaluate import main as evaluate_main
+        from evaluate_cli import main as evaluate_main
 
         return evaluate_main(args[1:])
 
-    from evaluate import main as evaluate_main
+    from evaluate_cli import main as evaluate_main
 
     return evaluate_main(args)
 

@@ -16,7 +16,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from evaluate import (
+from evaluate_cli import (
     EvalSample,
     PROJECT_ROOT,
     collect_model_stats,

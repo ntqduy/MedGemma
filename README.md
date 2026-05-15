@@ -167,17 +167,17 @@ python src/eval/eval_caption.py --sample 100 --split test1k
 python src/eval/eval_vqa.py --sample 100
 
 # Compatibility path:
-python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k
-python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100
+python evaluate_cli.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 100
 ```
 
 Rule-based multi-slice baseline:
 
 ```bash
-python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k \
+python evaluate_cli.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k \
   --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 
-python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 100 \
   --num_slices 16 --slice_strategy center_uniform --view axial --inference_mode montage
 ```
 
@@ -316,14 +316,14 @@ Training writes `train_config.yaml`, `train_dataset_summary.json`,
 Validate config and dataset paths without loading the model:
 
 ```bash
-python evaluate.py --config config/CAP_task.yaml --task cap --sample 5 --split test1k --dry-run
+python evaluate_cli.py --config config/CAP_task.yaml --task cap --sample 5 --split test1k --dry-run
 python train.py --config config/CAP_task.yaml --task cap --sample 5 --train-mode lora --split train --dry-run
 ```
 
 Check Python syntax:
 
 ```bash
-python -m py_compile main.py evaluate.py train.py
+python -m py_compile main.py evaluate_cli.py train.py
 ```
 
 ## Troubleshooting

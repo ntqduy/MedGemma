@@ -1521,6 +1521,25 @@ def med3dvlm_eval_bundle(logger: logging.Logger) -> Optional[Dict[str, Any]]:
     try:
         import evaluate  # type: ignore
 
+        module_path = getattr(evaluate, "__file__", "")
+        if module_path:
+            resolved = Path(module_path).resolve()
+            if PROJECT_ROOT in resolved.parents:
+                logger.warning(
+                    "Med3DVLM-style metrics unavailable: 'evaluate' resolved to local module %s. "
+                    "Rename local evaluate_cli.py or adjust PYTHONPATH.",
+                    resolved,
+                )
+                _MED3DVLM_EVAL_BUNDLE = None
+                return None
+        if not hasattr(evaluate, "load"):
+            logger.warning(
+                "Med3DVLM-style metrics unavailable: 'evaluate' has no load(). "
+                "Install/upgrade evaluate>=0.4.2."
+            )
+            _MED3DVLM_EVAL_BUNDLE = None
+            return None
+
         _MED3DVLM_EVAL_BUNDLE = {
             "bleu": evaluate.load("bleu"),
             "rouge": evaluate.load("rouge"),
