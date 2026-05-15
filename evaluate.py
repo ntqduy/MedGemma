@@ -55,6 +55,23 @@ class ModelBundle:
     dtype: Any
 
 
+@dataclass
+class SliceInferenceConfig:
+    num_slices: int = 1
+    slice_strategy: str = "middle"
+    view: str = "axial"
+    inference_mode: str = "montage"
+
+
+@dataclass
+class SliceImageBundle:
+    images: List[Any]
+    selected_slice_indices: List[int]
+    prompt: str
+    montage_path: Optional[str] = None
+    per_slice_prompts: List[str] = field(default_factory=list)
+
+
 def parse_scalar(value: str) -> Any:
     value = value.strip()
     if not value:
@@ -572,6 +589,248 @@ def load_image_as_rgb(path: Path, image_config: Dict[str, Any]) -> Any:
     return Image.open(path).convert("RGB")
 
 
+def load_volume_array(path: Path) -> Any:
+    lowered = str(path).lower()
+    if lowered.endswith(".npy"):
+        if not package_available("numpy"):
+            raise ImportError("numpy is required to read .npy images.")
+        import numpy as np  # type: ignore
+
+        return np.load(path)
+    if lowered.endswith(".nii") or lowered.endswith(".nii.gz"):
+        if not package_available("nibabel"):
+            raise ImportError("nibabel is required to read NIfTI images.")
+        import nibabel as nib  # type: ignore
+
+        return nib.load(str(path)).get_fdata()
+    return None
+
+
+def squeeze_volume_array(array: Any) -> Any:
+    import numpy as np  # type: ignore
+
+    arr = np.asarray(array)
+    arr = np.squeeze(arr)
+    while arr.ndim > 3:
+        arr = np.take(arr, arr.shape[0] // 2, axis=0)
+        arr = np.squeeze(arr)
+    return arr
+
+
+def view_axis_for_volume(view: str) -> int:
+    return {"axial": 0, "coronal": 1, "sagittal": 2}[view]
+
+
+def select_slice_indices(depth: int, num_slices: int, slice_strategy: str) -> List[int]:
+    if depth <= 0:
+        raise ValueError("Cannot select slices from an empty volume axis.")
+    if num_slices <= 1 or slice_strategy == "middle":
+        return [depth // 2]
+
+    margin = int(math.floor(depth * 0.10))
+    start = margin
+    end = depth - margin - 1
+    if end < start:
+        start, end = 0, depth - 1
+    if num_slices == 1:
+        return [(start + end) // 2]
+    if num_slices <= 0:
+        raise ValueError("num_slices must be positive.")
+
+    if num_slices == 1:
+        return [(start + end) // 2]
+    step = (end - start) / max(num_slices - 1, 1)
+    return [max(0, min(depth - 1, int(round(start + step * idx)))) for idx in range(num_slices)]
+
+
+def extract_volume_slices(path: Path, slice_config: SliceInferenceConfig) -> Tuple[List[Any], List[int]]:
+    volume = load_volume_array(path)
+    if volume is None:
+        if slice_config.num_slices > 1:
+            raise ValueError(f"Cannot select multiple slices from a non-volume image: {path}")
+        image = load_image_as_rgb(path, {})
+        return [image], [0]
+
+    arr = squeeze_volume_array(volume)
+    if arr.ndim == 2:
+        return [arr], [0]
+    if arr.ndim != 3:
+        raise ValueError(f"Unsupported volume shape after squeeze: {arr.shape}")
+
+    axis = view_axis_for_volume(slice_config.view)
+    indices = select_slice_indices(arr.shape[axis], slice_config.num_slices, slice_config.slice_strategy)
+    slices = [arr.take(index, axis=axis) for index in indices]
+    return slices, indices
+
+
+def slice_to_rgb_image(slice_array: Any) -> Any:
+    import numpy as np  # type: ignore
+    from PIL import Image  # type: ignore
+
+    arr = np.asarray(slice_array)
+    arr = np.squeeze(arr)
+    if arr.ndim > 2:
+        while arr.ndim > 2:
+            arr = np.take(arr, arr.shape[0] // 2, axis=0)
+            arr = np.squeeze(arr)
+    arr = normalize_array_to_uint8(arr)
+    return Image.fromarray(arr, mode="L").convert("RGB")
+
+
+def montage_grid_shape(num_slices: int) -> Tuple[int, int]:
+    cols = int(math.ceil(math.sqrt(num_slices)))
+    rows = int(math.ceil(num_slices / max(cols, 1)))
+    return rows, cols
+
+
+def parse_target_size(value: Any) -> Optional[Tuple[int, int]]:
+    if value in (None, "", "auto"):
+        return None
+    if isinstance(value, int):
+        return value, value
+    if isinstance(value, str):
+        parts = [part.strip() for part in re.split(r"[x,]", value) if part.strip()]
+        if len(parts) == 1:
+            size = int(parts[0])
+            return size, size
+        if len(parts) >= 2:
+            return int(parts[0]), int(parts[1])
+    if isinstance(value, (list, tuple)) and value:
+        if len(value) == 1:
+            size = int(value[0])
+            return size, size
+        return int(value[0]), int(value[1])
+    if isinstance(value, dict):
+        width = value.get("width") or value.get("w")
+        height = value.get("height") or value.get("h")
+        if width and height:
+            return int(width), int(height)
+    return None
+
+
+def processor_target_size(processor: Any, image_config: Dict[str, Any]) -> Tuple[int, int]:
+    configured = parse_target_size(image_config.get("montage_size") or image_config.get("target_size"))
+    if configured:
+        return configured
+
+    image_processor = getattr(processor, "image_processor", processor)
+    size = getattr(image_processor, "size", None)
+    if isinstance(size, dict):
+        width = size.get("width")
+        height = size.get("height")
+        if width and height:
+            return int(width), int(height)
+        shortest = size.get("shortest_edge")
+        if shortest:
+            edge = int(shortest)
+            return edge, edge
+        longest = size.get("longest_edge")
+        if longest:
+            edge = int(longest)
+            return edge, edge
+    if isinstance(size, int):
+        return size, size
+    return 896, 896
+
+
+def resize_image(image: Any, target_size: Tuple[int, int]) -> Any:
+    from PIL import Image  # type: ignore
+
+    resampling = getattr(Image, "Resampling", Image).BICUBIC
+    return image.resize(target_size, resampling)
+
+
+def build_montage_image(slice_images: Sequence[Any], target_size: Tuple[int, int]) -> Any:
+    from PIL import Image  # type: ignore
+
+    if not slice_images:
+        raise ValueError("Cannot build montage without slices.")
+    rows, cols = montage_grid_shape(len(slice_images))
+    tile_width = max(int(image.size[0]) for image in slice_images)
+    tile_height = max(int(image.size[1]) for image in slice_images)
+    resampling = getattr(Image, "Resampling", Image).BICUBIC
+    canvas = Image.new("RGB", (cols * tile_width, rows * tile_height), color=(0, 0, 0))
+    for idx, image in enumerate(slice_images):
+        row = idx // cols
+        col = idx % cols
+        tile = image.convert("RGB").resize((tile_width, tile_height), resampling)
+        canvas.paste(tile, (col * tile_width, row * tile_height))
+    return resize_image(canvas, target_size)
+
+
+def safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
+    return cleaned or "sample"
+
+
+def build_montage_prompt(task: str, sample: EvalSample, slice_config: SliceInferenceConfig) -> str:
+    if task == "vqa":
+        return (
+            f"This image is a montage of {slice_config.num_slices} {slice_config.view} slices from a 3D medical "
+            f"volume, ordered from first to last slice. Answer the question based on all slices. "
+            f"Question: {sample.question}"
+        )
+    return (
+        f"This image is a montage of {slice_config.num_slices} {slice_config.view} slices from a 3D medical "
+        "volume, ordered from first to last slice. Generate a concise medical caption describing the main findings."
+    )
+
+
+def build_independent_prompt(
+    task: str,
+    sample: EvalSample,
+    slice_config: SliceInferenceConfig,
+    ordinal: int,
+    slice_index: int,
+) -> str:
+    prefix = (
+        f"This image is {slice_config.view} slice {ordinal + 1} of {slice_config.num_slices} "
+        f"from a 3D medical volume, selected by a fixed rule at slice index {slice_index}."
+    )
+    if task == "vqa":
+        return f"{prefix} Answer the question based on this slice. Question: {sample.question}"
+    return f"{prefix} Generate a concise medical caption describing the main findings in this slice."
+
+
+def prepare_slice_images(
+    sample: EvalSample,
+    task: str,
+    slice_config: SliceInferenceConfig,
+    processor: Any,
+    image_config: Dict[str, Any],
+    output_dir: Path,
+) -> SliceImageBundle:
+    raw_slices, selected_indices = extract_volume_slices(Path(sample.image_path), slice_config)
+    slice_images = [slice_to_rgb_image(slice_array) if not hasattr(slice_array, "convert") else slice_array.convert("RGB") for slice_array in raw_slices]
+    target_size = processor_target_size(processor, image_config)
+    prompt = build_montage_prompt(task, sample, slice_config)
+
+    if slice_config.inference_mode == "independent":
+        resized = [resize_image(image, target_size) for image in slice_images]
+        per_slice_prompts = [
+            build_independent_prompt(task, sample, slice_config, idx, selected_indices[idx])
+            for idx in range(len(selected_indices))
+        ]
+        return SliceImageBundle(
+            images=resized,
+            selected_slice_indices=selected_indices,
+            prompt=prompt,
+            per_slice_prompts=per_slice_prompts,
+        )
+
+    montage = build_montage_image(slice_images, target_size)
+    montage_dir = output_dir / "montages"
+    montage_dir.mkdir(parents=True, exist_ok=True)
+    montage_path = montage_dir / f"{safe_filename(sample.sample_id)}_{slice_config.view}_{slice_config.num_slices}.png"
+    montage.save(montage_path)
+    return SliceImageBundle(
+        images=[montage],
+        selected_slice_indices=selected_indices,
+        prompt=prompt,
+        montage_path=str(montage_path),
+    )
+
+
 def get_torch_dtype(torch: Any, dtype_name: Any) -> Any:
     name = str(dtype_name or "auto").lower()
     if name == "auto":
@@ -609,6 +868,52 @@ def bool_from_config(value: Any, default: bool = False) -> bool:
 def get_processor_use_fast(config: Dict[str, Any]) -> bool:
     processor_config = dict(config.get("processor") or {})
     return bool_from_config(processor_config.get("use_fast", config.get("processor_use_fast")), False)
+
+
+def build_slice_inference_config(config: Dict[str, Any], args: argparse.Namespace) -> SliceInferenceConfig:
+    configured = dict(config.get("slice_inference") or {})
+    raw_num_slices = args.num_slices if getattr(args, "num_slices", None) is not None else configured.get("num_slices", 1)
+    try:
+        num_slices = int(raw_num_slices)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid num_slices: {raw_num_slices!r}") from exc
+    if num_slices < 1:
+        raise ValueError("--num_slices must be >= 1")
+
+    requested_strategy = str(
+        args.slice_strategy if getattr(args, "slice_strategy", None) is not None else configured.get("slice_strategy", "middle")
+    ).strip().lower()
+    if requested_strategy not in {"middle", "uniform"}:
+        raise ValueError("--slice_strategy must be one of: middle, uniform")
+    slice_strategy = "middle" if num_slices == 1 else "uniform"
+
+    view = str(args.view if getattr(args, "view", None) is not None else configured.get("view", "axial")).strip().lower()
+    if view not in {"axial", "sagittal", "coronal"}:
+        raise ValueError("--view must be one of: axial, sagittal, coronal")
+
+    inference_mode = str(
+        args.inference_mode
+        if getattr(args, "inference_mode", None) is not None
+        else configured.get("inference_mode", "montage")
+    ).strip().lower()
+    if inference_mode not in {"montage", "independent"}:
+        raise ValueError("--inference_mode must be one of: montage, independent")
+
+    return SliceInferenceConfig(
+        num_slices=num_slices,
+        slice_strategy=slice_strategy,
+        view=view,
+        inference_mode=inference_mode,
+    )
+
+
+def slice_inference_config_to_dict(slice_config: SliceInferenceConfig) -> Dict[str, Any]:
+    return {
+        "num_slices": slice_config.num_slices,
+        "slice_strategy": slice_config.slice_strategy,
+        "view": slice_config.view,
+        "inference_mode": slice_config.inference_mode,
+    }
 
 
 def validate_local_model_path(model_path: Path, local_files_only: bool = True) -> None:
@@ -1263,11 +1568,35 @@ def get_progress(iterable: Iterable[Any], total: int, desc: str, logger: logging
     return iterable
 
 
+def aggregate_vqa_predictions(per_slice_predictions: Sequence[Dict[str, Any]], choices: Dict[str, str]) -> str:
+    mapped_answers = [str(row.get("mapped_answer") or row.get("prediction") or "") for row in per_slice_predictions]
+    counts = Counter(exact_normalize(answer) for answer in mapped_answers if exact_normalize(answer))
+    if not counts:
+        return ""
+    best_count = max(counts.values())
+    tied = {answer for answer, count in counts.items() if count == best_count}
+    for answer in mapped_answers:
+        normalized = exact_normalize(answer)
+        if normalized in tied:
+            if choices:
+                for choice_text in choices.values():
+                    if exact_normalize(choice_text) == normalized:
+                        return choice_text
+            return answer
+    return mapped_answers[0] if mapped_answers else ""
+
+
+def join_caption_predictions(per_slice_predictions: Sequence[Dict[str, Any]]) -> str:
+    captions = [str(row.get("prediction", "")).strip() for row in per_slice_predictions]
+    return " ".join(caption for caption in captions if caption)
+
+
 def evaluate_loop(
     task: str,
     samples: Sequence[EvalSample],
     bundle: ModelBundle,
     config: Dict[str, Any],
+    slice_config: SliceInferenceConfig,
     output_dir: Path,
     logger: logging.Logger,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[float], int, List[Dict[str, Any]]]:
@@ -1295,19 +1624,73 @@ def evaluate_loop(
                     raise FileNotFoundError(sample.meta["ground_truth_error"])
                 if not sample.ground_truth:
                     raise ValueError("Ground truth is empty.")
-                image = load_image_as_rgb(Path(sample.image_path), image_config)
-                prediction, elapsed, generated_tokens = generate_prediction(bundle, image, sample.prompt, generation_kwargs)
+                slice_bundle = prepare_slice_images(
+                    sample=sample,
+                    task=task,
+                    slice_config=slice_config,
+                    processor=bundle.processor,
+                    image_config=image_config,
+                    output_dir=output_dir,
+                )
+
+                per_slice_predictions: List[Dict[str, Any]] = []
+                if slice_config.inference_mode == "independent":
+                    elapsed = 0.0
+                    generated_tokens = 0
+                    for idx, image in enumerate(slice_bundle.images):
+                        slice_prompt = slice_bundle.per_slice_prompts[idx]
+                        slice_prediction, slice_elapsed, slice_generated_tokens = generate_prediction(
+                            bundle,
+                            image,
+                            slice_prompt,
+                            generation_kwargs,
+                        )
+                        elapsed += slice_elapsed
+                        generated_tokens += slice_generated_tokens
+                        slice_row: Dict[str, Any] = {
+                            "slice_order": idx,
+                            "slice_index": slice_bundle.selected_slice_indices[idx],
+                            "prompt": slice_prompt,
+                            "prediction": slice_prediction,
+                            "inference_time": slice_elapsed,
+                            "generated_tokens": slice_generated_tokens,
+                        }
+                        if task == "vqa":
+                            slice_row["mapped_answer"] = map_prediction_to_choice(slice_prediction, sample.choices)
+                        per_slice_predictions.append(slice_row)
+                    if task == "vqa":
+                        prediction = aggregate_vqa_predictions(per_slice_predictions, sample.choices)
+                    else:
+                        prediction = join_caption_predictions(per_slice_predictions)
+                else:
+                    prediction, elapsed, generated_tokens = generate_prediction(
+                        bundle,
+                        slice_bundle.images[0],
+                        slice_bundle.prompt,
+                        generation_kwargs,
+                    )
+
                 inference_times.append(elapsed)
                 total_generated_tokens += generated_tokens
 
                 base_row: Dict[str, Any] = {
                     "sample_id": sample.sample_id,
                     "image_path": sample.image_path,
-                    "prompt": sample.prompt,
+                    "view": slice_config.view,
+                    "num_slices": slice_config.num_slices,
+                    "slice_strategy": slice_config.slice_strategy,
+                    "selected_slice_indices": slice_bundle.selected_slice_indices,
+                    "inference_mode": slice_config.inference_mode,
+                    "prompt": slice_bundle.prompt,
                     "prediction": prediction,
                     "ground_truth": sample.ground_truth,
                     "inference_time": elapsed,
+                    "generated_tokens": generated_tokens,
                 }
+                if slice_config.inference_mode == "independent":
+                    base_row["per_slice_predictions"] = per_slice_predictions
+                if slice_bundle.montage_path:
+                    base_row["montage_path"] = slice_bundle.montage_path
                 if task == "cap":
                     base_row["split"] = sample.split
                 else:
@@ -1338,7 +1721,11 @@ def evaluate_loop(
                 error_payload = {
                     "sample_id": sample.sample_id,
                     "image_path": sample.image_path,
-                    "prompt": sample.prompt,
+                    "view": slice_config.view,
+                    "num_slices": slice_config.num_slices,
+                    "slice_strategy": slice_config.slice_strategy,
+                    "inference_mode": slice_config.inference_mode,
+                    "prompt": build_montage_prompt(task, sample, slice_config),
                     "ground_truth": sample.ground_truth,
                     "error": str(exc),
                     "traceback": traceback.format_exc(),
@@ -1396,6 +1783,7 @@ def run(args: argparse.Namespace) -> int:
     config_path = config_path.resolve()
     config = load_config(config_path)
     task = infer_task_name(args.task, config, config_path)
+    slice_config = build_slice_inference_config(config, args)
     split = str(args.split or config.get("split") or "test1k")
     sample_value = args.sample if args.sample is not None else config.get("sample", config.get("max_samples", "full"))
     max_samples, sample_label = normalize_sample_spec(sample_value)
@@ -1426,6 +1814,7 @@ def run(args: argparse.Namespace) -> int:
             "split": split,
             "sample": sample_label,
             "max_samples": max_samples,
+            "slice_inference": slice_inference_config_to_dict(slice_config),
             "command": " ".join(shlex.quote(arg) for arg in sys.argv),
         }
     )
@@ -1439,6 +1828,7 @@ def run(args: argparse.Namespace) -> int:
     logger.info("Image root: %s", image_root)
     logger.info("Split: %s", split if task == "cap" else "N/A")
     logger.info("Sample count: %s", sample_label)
+    logger.info("Slice inference: %s", json.dumps(slice_inference_config_to_dict(slice_config), ensure_ascii=False))
     logger.info("Result directory: %s", output_dir)
     logger.info("Metric packages: %s", json.dumps(package_status, ensure_ascii=False))
 
@@ -1475,6 +1865,7 @@ def run(args: argparse.Namespace) -> int:
         samples=samples,
         bundle=bundle,
         config=config,
+        slice_config=slice_config,
         output_dir=output_dir,
         logger=logger,
     )
@@ -1496,6 +1887,7 @@ def run(args: argparse.Namespace) -> int:
     metrics.update(
         {
             "task": task,
+            "slice_inference": slice_inference_config_to_dict(slice_config),
             "dataset_schema": schema_info,
             "num_requested_samples": len(samples),
             "num_failed_samples": len(errors),
@@ -1522,6 +1914,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample", default=None, help="Integer sample count or 'full'.")
     parser.add_argument("--split", default=None, help="Caption split, for example test1k.")
     parser.add_argument("--output-dir", default=None, help="Optional explicit output directory.")
+    parser.add_argument(
+        "--num_slices",
+        "--num-slices",
+        dest="num_slices",
+        type=int,
+        default=None,
+        help="Number of rule-selected slices from each 3D volume. Default: 1.",
+    )
+    parser.add_argument(
+        "--slice_strategy",
+        "--slice-strategy",
+        dest="slice_strategy",
+        choices=["middle", "uniform"],
+        default=None,
+        help="Rule-based slice selection strategy. Default: middle for one slice, uniform for multiple slices.",
+    )
+    parser.add_argument(
+        "--view",
+        choices=["axial", "sagittal", "coronal"],
+        default=None,
+        help="3D view axis used for rule-based slicing. Default: axial.",
+    )
+    parser.add_argument(
+        "--inference_mode",
+        "--inference-mode",
+        dest="inference_mode",
+        choices=["montage", "independent"],
+        default=None,
+        help="Run one montage image or run each selected slice independently. Default: montage.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate config/dataset and write skeleton outputs.")
     return parser
 

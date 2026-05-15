@@ -30,6 +30,16 @@ columns:
 processor:
   use_fast: false
 
+slice_inference:
+  # num_slices=1 chọn middle slice.
+  # num_slices>1 tự dùng uniform.
+  # Bỏ 10% đầu/cuối axis.
+  # tạo matrix chứa num_slices
+  num_slices: 64
+  slice_strategy: middle
+  view: axial
+  inference_mode: montage
+
 image:
   slice_axis: auto
 

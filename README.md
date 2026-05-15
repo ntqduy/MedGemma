@@ -92,6 +92,16 @@ python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split
 python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100
 ```
 
+Rule-based multi-slice baseline:
+
+```bash
+python evaluate.py --config config/CAP_task.yaml --task cap --sample 100 --split test1k \
+  --num_slices 9 --slice_strategy uniform --view axial --inference_mode montage
+
+python evaluate.py --config config/VQA_task.yaml --task vqa --sample 100 \
+  --num_slices 5 --slice_strategy uniform --view coronal --inference_mode independent
+```
+
 You can also use the shared entrypoint:
 
 ```bash
@@ -102,6 +112,46 @@ python main.py eval --config config/VQA_task.yaml --task vqa --sample 100
 Each run writes `predictions.jsonl`, `metrics.json`, `benchmark.json`,
 `run_config.yaml`, `log.txt`, `errors.jsonl`, and preview files under
 `results/EVAL_*`.
+
+### Slice Inference Baseline
+
+The evaluator uses a fixed rule-based slice baseline for 3D volumes. The model
+does not choose slices.
+
+Defaults:
+
+```text
+--num_slices 1
+--slice_strategy middle
+--view axial
+--inference_mode montage
+```
+
+Rules:
+
+- `num_slices=1` selects the middle slice for the chosen view.
+- `num_slices>1` selects uniformly spaced slices for the chosen view.
+- Uniform selection skips the first and last 10% of the selected axis.
+- No entropy, mask, model-based, or adaptive selection is used.
+
+Views:
+
+```text
+axial    -> axis 0
+coronal  -> axis 1
+sagittal -> axis 2
+```
+
+`montage` mode builds a near-square grid, resizes it for the processor, saves
+debug images under `results/EVAL_*/montages/`, and runs MedGemma once.
+
+`independent` mode runs MedGemma once per selected slice. VQA uses majority vote
+over per-slice answers. Captioning concatenates slice captions in slice order.
+
+Each row in `predictions.jsonl` includes `view`, `num_slices`,
+`selected_slice_indices`, `inference_mode`, `prompt`, `prediction`,
+`ground_truth`, plus `montage_path` or `per_slice_predictions` depending on the
+mode.
 
 ## Training / Fine-tuning
 

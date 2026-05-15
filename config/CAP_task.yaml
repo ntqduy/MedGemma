@@ -21,6 +21,12 @@ prompt_template: "<start_of_image> findings:"
 processor:
   use_fast: false
 
+slice_inference:
+  num_slices: 1
+  slice_strategy: middle
+  view: axial
+  inference_mode: montage
+
 image:
   slice_axis: auto
 
