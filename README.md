@@ -8,7 +8,7 @@ This project evaluates and fine-tunes MedGemma on local medical image datasets:
 The default configs use the instruction-tuned model at:
 
 ```text
-weight/medgemma-4b-it
+weight/medgemma-1.5-4b-it
 ```
 
 ## Setup
@@ -32,7 +32,7 @@ Expected layout:
 ```text
 MedGemma/
   weight/
-    medgemma-4b-it/
+    medgemma-1.5-4b-it/
       config.json
       model.safetensors.index.json
       model-00001-of-00002.safetensors
@@ -44,7 +44,7 @@ If you use Hugging Face CLI and have access to the model:
 
 ```bash
 huggingface-cli login
-huggingface-cli download google/medgemma-4b-it --local-dir weight/medgemma-4b-it
+huggingface-cli download google/medgemma-1.5-4b-it --local-dir weight/medgemma-1.5-4b-it
 ```
 
 If your model is stored somewhere else, update `model_path` in:
@@ -163,6 +163,21 @@ FileNotFoundError: model-00001-of-00002.safetensors
 the model directory is incomplete or `model_path` points to the wrong folder.
 Download/copy all shard files listed in `model.safetensors.index.json`, or
 update `model_path`.
+
+If you see:
+
+```text
+HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
+```
+
+Transformers did not recognize `model_path` as an existing local directory and
+tried to parse it as a Hugging Face repo id. Check that the resolved path exists
+on the machine where you run the command:
+
+```bash
+ls -ld weight/medgemma-1.5-4b-it
+ls -lh weight/medgemma-1.5-4b-it
+```
 
 If you see:
 

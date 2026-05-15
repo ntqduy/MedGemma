@@ -598,6 +598,46 @@ def get_requested_device(torch: Any, device_name: Any) -> str:
     return name
 
 
+def validate_local_model_path(model_path: Path, local_files_only: bool = True) -> None:
+    if not local_files_only:
+        return
+    if not model_path.exists():
+        raise FileNotFoundError(
+            "Local model_path does not exist: "
+            f"{model_path}\n"
+            "Check config model_path, the current project directory, or download/copy the model weights there."
+        )
+    if not model_path.is_dir():
+        raise NotADirectoryError(f"model_path must be a directory, got: {model_path}")
+    if not (model_path / "config.json").exists():
+        raise FileNotFoundError(
+            f"Model directory exists but is missing config.json: {model_path}\n"
+            "This folder does not look like a complete Hugging Face model directory."
+        )
+
+    index_path = model_path / "model.safetensors.index.json"
+    if index_path.exists():
+        try:
+            index_data = json.loads(index_path.read_text(encoding="utf-8"))
+            weight_files = sorted(set((index_data.get("weight_map") or {}).values()))
+        except Exception:
+            weight_files = []
+        missing = [name for name in weight_files if not (model_path / name).exists()]
+        if missing:
+            missing_preview = "\n".join(f"- {name}" for name in missing[:20])
+            raise FileNotFoundError(
+                f"Model directory is missing safetensors shard files listed in {index_path}:\n"
+                f"{missing_preview}"
+            )
+        return
+
+    has_weight_file = any(model_path.glob("*.safetensors")) or any(model_path.glob("pytorch_model*.bin"))
+    if not has_weight_file:
+        raise FileNotFoundError(
+            f"Model directory has no .safetensors or pytorch_model*.bin weight files: {model_path}"
+        )
+
+
 def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.Logger) -> Tuple[ModelBundle, Dict[str, Any]]:
     logger.info("Model path: %s", model_path)
     try:
@@ -616,6 +656,7 @@ def load_model_bundle(config: Dict[str, Any], model_path: Path, logger: logging.
         device_name = get_requested_device(torch, config.get("device", "auto"))
         dtype = get_torch_dtype(torch, config.get("dtype", "auto"))
         local_files_only = bool(config.get("local_files_only", True))
+        validate_local_model_path(model_path, local_files_only)
 
         processor = AutoProcessor.from_pretrained(
             str(model_path),

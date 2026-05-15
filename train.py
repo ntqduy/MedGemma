@@ -34,6 +34,7 @@ from evaluate import (
     resolve_output_root,
     save_yaml_or_json,
     setup_logging,
+    validate_local_model_path,
     write_json,
 )
 
@@ -385,6 +386,7 @@ def load_processor_and_model(
     dtype = get_torch_dtype(torch, config.get("dtype", "auto"))
     local_files_only = bool_config(config.get("local_files_only"), True)
     trust_remote_code = bool_config(config.get("trust_remote_code"), True)
+    validate_local_model_path(model_path, local_files_only)
 
     processor = AutoProcessor.from_pretrained(
         str(model_path),
