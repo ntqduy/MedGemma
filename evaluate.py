@@ -1380,13 +1380,36 @@ def bertscore_safe(
     try:
         from bert_score import score as bert_score  # type: ignore
 
+        def resolve_model_type(value: Any) -> Optional[str]:
+            raw = str(value or "").strip()
+            if not raw or raw.lower() in {"none", "null"}:
+                return None
+            expanded = Path(os.path.expandvars(os.path.expanduser(raw)))
+            candidates = [expanded] if expanded.is_absolute() else [(PROJECT_ROOT / expanded), (Path.cwd() / expanded)]
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate.resolve())
+            looks_local = any(sep in raw for sep in ("/", "\\")) or raw.startswith((".", "~")) or ":" in raw
+            if looks_local:
+                logger.warning(
+                    "BERTScore local model path does not exist: %s. "
+                    "Download/copy roberta-large there or set metrics.bertscore_model_type to the correct local path.",
+                    str(candidates[0].resolve()),
+                )
+                return "__missing_local_bertscore_model__"
+            return raw
+
         kwargs: Dict[str, Any] = {
             "lang": str(metrics_config.get("bertscore_lang", "en")),
             "verbose": bool(metrics_config.get("bertscore_verbose", False)),
             "rescale_with_baseline": bool(metrics_config.get("bertscore_rescale_with_baseline", False)),
         }
         if metrics_config.get("bertscore_model_type"):
-            kwargs["model_type"] = str(metrics_config.get("bertscore_model_type"))
+            resolved_model_type = resolve_model_type(metrics_config.get("bertscore_model_type"))
+            if resolved_model_type == "__missing_local_bertscore_model__":
+                return None
+            if resolved_model_type:
+                kwargs["model_type"] = resolved_model_type
         if metrics_config.get("bertscore_device"):
             kwargs["device"] = str(metrics_config.get("bertscore_device"))
         precision, recall, f1 = bert_score(list(predictions), list(references), **kwargs)

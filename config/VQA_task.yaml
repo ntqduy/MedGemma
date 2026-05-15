@@ -120,7 +120,7 @@ metrics:
   meteor: true
   bertscore: true
   bertscore_lang: en
-  bertscore_model_type: null
+  bertscore_model_type: weight/roberta-large
   bertscore_rescale_with_baseline: false
   cider: true
   spice: true

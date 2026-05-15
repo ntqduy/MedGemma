@@ -311,9 +311,10 @@ Transformers.
 `bitsandbytes` is skipped on Windows by `requirements.txt`. Quantized 4-bit or
 8-bit loading is recommended on Linux/CUDA environments.
 
-`BERTScore` is disabled by default because it loads a separate text model such
-as `roberta-large` from Hugging Face. Enable `metrics.bertscore: true` only when
-that metric model is already cached locally or the machine has internet access.
+`BERTScore` loads a separate text model, not the MedGemma weights. The configs
+point `metrics.bertscore_model_type` to `weight/roberta-large`; copy/download a
+complete Hugging Face `roberta-large` folder there, or change that config value
+to the absolute local path of your cached snapshot.
 
 `processor.use_fast` is set to `false` in the task configs to keep the saved
 slow image processor behavior explicit and avoid Transformers version-change

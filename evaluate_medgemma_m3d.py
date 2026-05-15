@@ -522,17 +522,36 @@ def vqa_token_f1(prediction: str, ground_truth: str) -> float:
     return 2.0 * precision * recall / (precision + recall)
 
 
-def sample_text_metrics(prediction: str, reference: str, logger: logging.Logger, use_bertscore: bool) -> Dict[str, Any]:
+def bertscore_config_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "bertscore_lang": args.bertscore_lang,
+        "bertscore_model_type": args.bertscore_model_type,
+        "bertscore_rescale_with_baseline": args.bertscore_rescale_with_baseline,
+    }
+
+
+def sample_text_metrics(
+    prediction: str,
+    reference: str,
+    logger: logging.Logger,
+    use_bertscore: bool,
+    metrics_config: Dict[str, Any],
+) -> Dict[str, Any]:
     metrics: Dict[str, Any] = {}
     metrics.update(corpus_bleu_scores([prediction], [reference]))
     metrics.update(rouge_scores([prediction], [reference]))
     metrics["METEOR"] = meteor_score_safe([prediction], [reference], logger)
     if use_bertscore:
-        metrics["BERTScore"] = bertscore_safe([prediction], [reference], {}, logger)
+        metrics["BERTScore"] = bertscore_safe([prediction], [reference], metrics_config, logger)
     return metrics
 
 
-def aggregate_text_metrics(rows: Sequence[Dict[str, Any]], logger: logging.Logger, use_bertscore: bool) -> Dict[str, Any]:
+def aggregate_text_metrics(
+    rows: Sequence[Dict[str, Any]],
+    logger: logging.Logger,
+    use_bertscore: bool,
+    metrics_config: Dict[str, Any],
+) -> Dict[str, Any]:
     predictions = [str(row.get("prediction", "")) for row in rows]
     references = [str(row.get("ground_truth", "")) for row in rows]
     metrics: Dict[str, Any] = {"num_samples": len(rows)}
@@ -542,7 +561,7 @@ def aggregate_text_metrics(rows: Sequence[Dict[str, Any]], logger: logging.Logge
     metrics["CIDEr"] = cider_safe(predictions, references, logger)
     metrics["SPICE"] = spice_safe(predictions, references, logger)
     if use_bertscore:
-        metrics["BERTScore"] = bertscore_safe(predictions, references, {}, logger)
+        metrics["BERTScore"] = bertscore_safe(predictions, references, metrics_config, logger)
     return metrics
 
 
@@ -715,6 +734,7 @@ def evaluate_cap(
     rows: List[Dict[str, Any]] = []
     predictions_path = output_dir / "predictions_cap.jsonl"
     use_bertscore = bool(args.bertscore)
+    metrics_config = bertscore_config_from_args(args)
     with predictions_path.open("w", encoding="utf-8") as handle:
         for idx, sample in enumerate(samples):
             try:
@@ -762,7 +782,9 @@ def evaluate_cap(
                     "ground_truth": sample.ground_truth,
                     "inference_time": elapsed,
                     "generated_tokens": generated_tokens,
-                    "metrics_per_sample": sample_text_metrics(prediction, sample.ground_truth, logger, use_bertscore),
+                    "metrics_per_sample": sample_text_metrics(
+                        prediction, sample.ground_truth, logger, use_bertscore, metrics_config
+                    ),
                 }
                 rows.append(row)
                 append_jsonl(handle, row)
@@ -786,7 +808,7 @@ def evaluate_cap(
                 append_jsonl(handle, error)
                 logger.error("CAP sample %s failed: %s", sample.sample_id, exc, exc_info=True)
 
-    metrics = aggregate_text_metrics(rows, logger, use_bertscore)
+    metrics = aggregate_text_metrics(rows, logger, use_bertscore, metrics_config)
     write_json(output_dir / "metrics_cap.json", metrics)
     logger.info("Saved CAP predictions: %s", predictions_path)
     logger.info("Saved CAP metrics: %s", output_dir / "metrics_cap.json")
@@ -804,6 +826,7 @@ def evaluate_vqa(
     open_rows: List[Dict[str, Any]] = []
     predictions_path = output_dir / "predictions_vqa.jsonl"
     use_bertscore = bool(args.bertscore)
+    metrics_config = bertscore_config_from_args(args)
     correct_values: List[bool] = []
     type_correct: Dict[str, List[bool]] = {}
 
@@ -876,7 +899,9 @@ def evaluate_vqa(
                     "token_f1": token_f1_score,
                     "inference_time": elapsed,
                     "generated_tokens": generated_tokens,
-                    "metrics_per_sample": sample_text_metrics(prediction, sample.ground_truth, logger, use_bertscore)
+                    "metrics_per_sample": sample_text_metrics(
+                        prediction, sample.ground_truth, logger, use_bertscore, metrics_config
+                    )
                     if correct is None
                     else {},
                 }
@@ -931,7 +956,7 @@ def evaluate_vqa(
         ),
     }
     if open_rows:
-        metrics["open_text_metrics"] = aggregate_text_metrics(open_rows, logger, use_bertscore)
+        metrics["open_text_metrics"] = aggregate_text_metrics(open_rows, logger, use_bertscore, metrics_config)
     else:
         metrics["open_text_metrics"] = None
     write_json(output_dir / "metrics_vqa.json", metrics)
@@ -967,6 +992,12 @@ def save_run_config(args: argparse.Namespace, output_dir: Path, model_stats: Opt
             "cap_max_new_tokens": args.cap_max_new_tokens,
             "vqa_max_new_tokens": args.vqa_max_new_tokens,
         },
+        "metrics": {
+            "bertscore": bool(args.bertscore),
+            "bertscore_lang": args.bertscore_lang,
+            "bertscore_model_type": args.bertscore_model_type,
+            "bertscore_rescale_with_baseline": args.bertscore_rescale_with_baseline,
+        },
         "model_stats": model_stats,
         "command": " ".join(sys.argv),
     }
@@ -992,6 +1023,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vqa_max_new_tokens", type=int, default=64)
     parser.add_argument("--preview_every", type=int, default=10)
     parser.add_argument("--bertscore", action="store_true", help="Compute BERTScore if bert_score and model cache are available.")
+    parser.add_argument("--bertscore_lang", default="en")
+    parser.add_argument("--bertscore_model_type", default="weight/roberta-large")
+    parser.add_argument("--bertscore_rescale_with_baseline", action="store_true")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--device_map", default="auto")
     parser.add_argument("--dtype", default="bfloat16")
