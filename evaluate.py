@@ -1394,7 +1394,7 @@ def cider_safe(
     if not predictions:
         return None
     if not package_available("pycocoevalcap"):
-        logger.warning("CIDEr unavailable: pycocoevalcap is not installed")
+        logger.warning("CIDEr unavailable: official pycocoevalcap is not installed")
         return None
     try:
         from pycocoevalcap.cider.cider import Cider  # type: ignore
@@ -1517,12 +1517,14 @@ def compute_text_metrics(
     metrics: Dict[str, Any] = {}
     metrics.update(corpus_bleu_scores(predictions, references) if metrics_config.get("bleu", True) else {})
     metrics.update(rouge_scores(predictions, references) if metrics_config.get("rouge", True) else {})
-    metrics["METEOR"] = meteor_score_safe(predictions, references, logger) if metrics_config.get("meteor", True) else None
-    metrics["BERTScore"] = (
-        bertscore_safe(predictions, references, metrics_config, logger) if metrics_config.get("bertscore", True) else None
-    )
-    metrics["CIDEr"] = cider_safe(predictions, references, logger) if metrics_config.get("cider", True) else None
-    metrics["SPICE"] = spice_safe(predictions, references, logger) if metrics_config.get("spice", True) else None
+    if metrics_config.get("meteor", True):
+        metrics["METEOR"] = meteor_score_safe(predictions, references, logger)
+    if metrics_config.get("bertscore", True):
+        metrics["BERTScore"] = bertscore_safe(predictions, references, metrics_config, logger)
+    if metrics_config.get("cider", True):
+        metrics["CIDEr"] = cider_safe(predictions, references, logger)
+    if metrics_config.get("spice", True):
+        metrics["SPICE"] = spice_safe(predictions, references, logger)
     return metrics
 
 
@@ -1541,9 +1543,34 @@ def compute_task_metrics(
         exact_matches = [bool(row.get("exact_match", False)) for row in rows]
         normalized_matches = [bool(row.get("correct", False)) for row in rows]
         f1_scores = [float(row.get("token_f1", 0.0)) for row in rows]
+        multiple_choice_rows = [row for row in rows if row.get("choices")]
+        yes_no_rows = [
+            row
+            for row in rows
+            if not row.get("choices") and str(row.get("normalized_ground_truth", "")).strip().lower() in {"yes", "no"}
+        ]
+        open_rows = [
+            row
+            for row in rows
+            if not row.get("choices") and str(row.get("normalized_ground_truth", "")).strip().lower() not in {"yes", "no"}
+        ]
         metrics["Exact Match Accuracy"] = float(statistics.mean(exact_matches)) if rows else None
         metrics["Normalized Accuracy"] = float(statistics.mean(normalized_matches)) if rows else None
         metrics["Token-level F1"] = float(statistics.mean(f1_scores)) if rows else None
+        metrics["Multiple Choice Accuracy"] = (
+            float(statistics.mean(bool(row.get("correct", False)) for row in multiple_choice_rows))
+            if multiple_choice_rows
+            else None
+        )
+        metrics["Yes/No Accuracy"] = (
+            float(statistics.mean(bool(row.get("correct", False)) for row in yes_no_rows)) if yes_no_rows else None
+        )
+        metrics["Open Exact Match Accuracy"] = (
+            float(statistics.mean(bool(row.get("exact_match", False)) for row in open_rows)) if open_rows else None
+        )
+        metrics["Open Token-level F1"] = (
+            float(statistics.mean(float(row.get("token_f1", 0.0)) for row in open_rows)) if open_rows else None
+        )
         metrics["Confusion Summary"] = confusion_summary(rows)
     metrics.update(compute_text_metrics(predictions, references, metrics_config, logger))
     return metrics
@@ -1616,7 +1643,15 @@ def build_benchmark(
 
 
 def preview_text(row: Dict[str, Any], task: str) -> str:
-    lines = ["=" * 50, f"SAMPLE_ID: {row.get('sample_id')}", "PROMPT:", str(row.get("prompt", ""))]
+    lines = ["=" * 50, f"SAMPLE_ID: {row.get('sample_id')}"]
+    if row.get("requested_num_slices") is not None:
+        lines.append(f"REQUESTED_NUM_SLICES: {row.get('requested_num_slices')}")
+    if row.get("num_slices") is not None:
+        lines.append(f"ACTUAL_NUM_SLICES: {row.get('num_slices')}")
+    slice_indices = row.get("selected_slice_indices") or row.get("slice_indices")
+    if slice_indices is not None:
+        lines.append(f"SLICE_INDICES: {slice_indices}")
+    lines.extend(["PROMPT:", str(row.get("prompt", ""))])
     lines.extend(["", "PRED:", str(row.get("prediction", "")), "", "GT:", str(row.get("ground_truth", ""))])
     if task == "vqa":
         lines.extend(["", f"CORRECT: {str(bool(row.get('correct', False))).lower()}"])
@@ -1909,7 +1944,7 @@ def run(args: argparse.Namespace) -> int:
     logger.info("Split: %s", split if task == "cap" else "N/A")
     logger.info("Sample count: %s", sample_label)
     logger.info("Slice inference: %s", json.dumps(slice_inference_config_to_dict(slice_config), ensure_ascii=False))
-    logger.info("%-32s %s", "slice_inference.num_slices", slice_config.num_slices)
+    logger.info("%-32s %s", "slice_inference.requested_num_slices", slice_config.num_slices)
     logger.info("%-32s %s", "slice_inference.slice_strategy", slice_config.slice_strategy)
     logger.info("%-32s %s", "slice_inference.view", slice_config.view)
     logger.info("%-32s %s", "slice_inference.inference_mode", slice_config.inference_mode)

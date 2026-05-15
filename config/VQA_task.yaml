@@ -118,12 +118,12 @@ metrics:
   bleu: true
   rouge: true
   meteor: true
-  bertscore: false
+  bertscore: true
   bertscore_lang: en
   bertscore_model_type: null
   bertscore_rescale_with_baseline: false
-  cider: false
-  spice: false
+  cider: true
+  spice: true
   flops: true
   params: true
 

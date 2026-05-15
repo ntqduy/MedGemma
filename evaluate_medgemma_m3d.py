@@ -31,6 +31,7 @@ from evaluate import (
     PROJECT_ROOT,
     append_jsonl,
     bertscore_safe,
+    cider_safe,
     collect_model_stats,
     corpus_bleu_scores,
     detect_caption_schema,
@@ -45,6 +46,7 @@ from evaluate import (
     render_choices,
     resolve_relative_existing,
     rouge_scores,
+    spice_safe,
     to_jsonable,
     validate_local_model_path,
     write_json,
@@ -491,12 +493,29 @@ def vqa_correct(sample: VqaSample, prediction: str) -> Tuple[Optional[bool], str
     return None, normalize_eval_text(prediction), normalize_eval_text(sample.ground_truth)
 
 
+def vqa_token_f1(prediction: str, ground_truth: str) -> float:
+    pred_tokens = normalize_eval_text(prediction).split()
+    gt_tokens = normalize_eval_text(ground_truth).split()
+    if not pred_tokens and not gt_tokens:
+        return 1.0
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+    common = Counter(pred_tokens) & Counter(gt_tokens)
+    overlap = sum(common.values())
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(gt_tokens)
+    return 2.0 * precision * recall / (precision + recall)
+
+
 def sample_text_metrics(prediction: str, reference: str, logger: logging.Logger, use_bertscore: bool) -> Dict[str, Any]:
     metrics: Dict[str, Any] = {}
     metrics.update(corpus_bleu_scores([prediction], [reference]))
     metrics.update(rouge_scores([prediction], [reference]))
     metrics["METEOR"] = meteor_score_safe([prediction], [reference], logger)
-    metrics["BERTScore"] = bertscore_safe([prediction], [reference], {}, logger) if use_bertscore else None
+    if use_bertscore:
+        metrics["BERTScore"] = bertscore_safe([prediction], [reference], {}, logger)
     return metrics
 
 
@@ -507,7 +526,10 @@ def aggregate_text_metrics(rows: Sequence[Dict[str, Any]], logger: logging.Logge
     metrics.update(corpus_bleu_scores(predictions, references))
     metrics.update(rouge_scores(predictions, references))
     metrics["METEOR"] = meteor_score_safe(predictions, references, logger)
-    metrics["BERTScore"] = bertscore_safe(predictions, references, {}, logger) if use_bertscore else None
+    metrics["CIDEr"] = cider_safe(predictions, references, logger)
+    metrics["SPICE"] = spice_safe(predictions, references, logger)
+    if use_bertscore:
+        metrics["BERTScore"] = bertscore_safe(predictions, references, {}, logger)
     return metrics
 
 
@@ -690,6 +712,19 @@ def evaluate_cap(
                     cap_prompt,
                     logger,
                 )
+                actual_num_slices = len(slice_indices)
+                model_input_images = len(images)
+                logger.info(
+                    "Slice selection | task=cap | sample_id=%s | requested_num_slices=%s | actual_num_slices=%d | model_input_images=%d | strategy=%s | plane=%s | slice_grid=%s | indices=%s",
+                    sample.sample_id,
+                    args.num_slices,
+                    actual_num_slices,
+                    model_input_images,
+                    args.slice_strategy,
+                    args.plane,
+                    bool(args.slice_grid),
+                    slice_indices,
+                )
                 prediction, elapsed, generated_tokens = generate(
                     bundle,
                     images,
@@ -699,7 +734,9 @@ def evaluate_cap(
                 row = {
                     "sample_id": sample.sample_id,
                     "image_path": sample.image_path,
-                    "num_slices": len(slice_indices),
+                    "num_slices": actual_num_slices,
+                    "requested_num_slices": args.num_slices,
+                    "model_input_images": model_input_images,
                     "slice_indices": slice_indices,
                     "slice_strategy": args.slice_strategy,
                     "plane": args.plane,
@@ -715,8 +752,10 @@ def evaluate_cap(
                 append_jsonl(handle, row)
                 if idx % max(args.preview_every, 1) == 0:
                     logger.info(
-                        "\n[CAP SAMPLE]\nID: %s\nSlice indices: %s\nGT: %s\nPR: %s",
+                        "\n[CAP SAMPLE]\nID: %s\nActual num slices: %d\nModel input images: %d\nSlice indices: %s\nGT: %s\nPR: %s",
                         sample.sample_id,
+                        actual_num_slices,
+                        model_input_images,
                         slice_indices,
                         sample.ground_truth,
                         prediction,
@@ -761,6 +800,19 @@ def evaluate_vqa(
                     lambda image_count, s=sample: vqa_prompt(s, image_count),
                     logger,
                 )
+                actual_num_slices = len(slice_indices)
+                model_input_images = len(images)
+                logger.info(
+                    "Slice selection | task=vqa | sample_id=%s | requested_num_slices=%s | actual_num_slices=%d | model_input_images=%d | strategy=%s | plane=%s | slice_grid=%s | indices=%s",
+                    sample.sample_id,
+                    args.num_slices,
+                    actual_num_slices,
+                    model_input_images,
+                    args.slice_strategy,
+                    args.plane,
+                    bool(args.slice_grid),
+                    slice_indices,
+                )
                 prediction, elapsed, generated_tokens = generate(
                     bundle,
                     images,
@@ -768,8 +820,17 @@ def evaluate_vqa(
                     generation_kwargs(args, bundle, "vqa"),
                 )
                 correct, normalized_prediction, normalized_ground_truth = vqa_correct(sample, prediction)
+                exact_match = normalized_prediction == normalized_ground_truth
+                token_f1_score = vqa_token_f1(normalized_prediction, normalized_ground_truth)
                 if correct is None:
-                    open_rows.append({"prediction": prediction, "ground_truth": sample.ground_truth})
+                    open_rows.append(
+                        {
+                            "prediction": prediction,
+                            "ground_truth": sample.ground_truth,
+                            "exact_match": exact_match,
+                            "token_f1": token_f1_score,
+                        }
+                    )
                 else:
                     correct_values.append(bool(correct))
                     type_correct.setdefault(sample.question_type or "closed", []).append(bool(correct))
@@ -780,7 +841,9 @@ def evaluate_vqa(
                     "question_type": sample.question_type,
                     "choices": sample.choices,
                     "answer_choice": sample.answer_choice,
-                    "num_slices": len(slice_indices),
+                    "num_slices": actual_num_slices,
+                    "requested_num_slices": args.num_slices,
+                    "model_input_images": model_input_images,
                     "slice_indices": slice_indices,
                     "slice_strategy": args.slice_strategy,
                     "plane": args.plane,
@@ -791,6 +854,8 @@ def evaluate_vqa(
                     "normalized_prediction": normalized_prediction,
                     "normalized_ground_truth": normalized_ground_truth,
                     "correct": correct,
+                    "exact_match": exact_match,
+                    "token_f1": token_f1_score,
                     "inference_time": elapsed,
                     "generated_tokens": generated_tokens,
                     "metrics_per_sample": sample_text_metrics(prediction, sample.ground_truth, logger, use_bertscore)
@@ -801,8 +866,11 @@ def evaluate_vqa(
                 append_jsonl(handle, row)
                 if idx % max(args.preview_every, 1) == 0:
                     logger.info(
-                        "\n[VQA SAMPLE]\nID: %s\nQuestion: %s\nGT: %s\nPR: %s\nCorrect: %s",
+                        "\n[VQA SAMPLE]\nID: %s\nActual num slices: %d\nModel input images: %d\nSlice indices: %s\nQuestion: %s\nGT: %s\nPR: %s\nCorrect: %s",
                         sample.sample_id,
+                        actual_num_slices,
+                        model_input_images,
+                        slice_indices,
                         sample.question,
                         sample.ground_truth,
                         prediction,
@@ -823,6 +891,12 @@ def evaluate_vqa(
         "num_samples": len(rows),
         "num_closed_samples": len(correct_values),
         "closed_accuracy": (sum(correct_values) / len(correct_values)) if correct_values else None,
+        "exact_match_accuracy": (
+            sum(bool(row.get("exact_match", False)) for row in rows) / len(rows) if rows else None
+        ),
+        "token_f1": (
+            sum(float(row.get("token_f1", 0.0)) for row in rows) / len(rows) if rows else None
+        ),
         "accuracy_by_type": {
             label: {
                 "num_samples": len(values),
@@ -831,6 +905,12 @@ def evaluate_vqa(
             for label, values in sorted(type_correct.items())
         },
         "num_open_samples": len(open_rows),
+        "open_exact_match_accuracy": (
+            sum(bool(row.get("exact_match", False)) for row in open_rows) / len(open_rows) if open_rows else None
+        ),
+        "open_token_f1": (
+            sum(float(row.get("token_f1", 0.0)) for row in open_rows) / len(open_rows) if open_rows else None
+        ),
     }
     if open_rows:
         metrics["open_text_metrics"] = aggregate_text_metrics(open_rows, logger, use_bertscore)

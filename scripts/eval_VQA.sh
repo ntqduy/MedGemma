@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SAMPLE="${1:-100}"
+GPU_ID="${CUDA_DEVICE_ID:-0}"
+
+export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 
 EXTRA_ARGS=()
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
@@ -17,6 +20,10 @@ Examples:
   bash scripts/eval_VQA.sh 1 auto axial montage uniform
   bash scripts/eval_VQA.sh 1 64 axial montage uniform
   bash scripts/eval_VQA.sh 1 --num_slices auto --view axial --inference_mode montage
+
+GPU:
+  Default physical GPU: 0
+  Override: CUDA_DEVICE_ID=1 bash scripts/eval_VQA.sh 1
 USAGE
   exit 0
 fi
@@ -39,6 +46,7 @@ elif [ "$#" -gt 1 ]; then
   EXTRA_ARGS=("${@:2}")
 fi
 
+echo "[eval_VQA] physical_gpu=${GPU_ID} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[eval_VQA] sample=${SAMPLE} extra_args=${EXTRA_ARGS[*]:-<from config>}"
 
 python "${PROJECT_ROOT}/evaluate.py" \

@@ -6,6 +6,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SAMPLE="${1:-100}"
 SPLIT="${2:-test1k}"
+GPU_ID="${CUDA_DEVICE_ID:-1}"
+
+export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 
 EXTRA_ARGS=()
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
@@ -18,6 +21,10 @@ Examples:
   bash scripts/eval_CAP.sh 1 test1k auto axial montage uniform
   bash scripts/eval_CAP.sh 1 test1k 64 axial montage uniform
   bash scripts/eval_CAP.sh 1 test1k --num_slices auto --view axial --inference_mode montage
+
+GPU:
+  Default physical GPU: 1
+  Override: CUDA_DEVICE_ID=0 bash scripts/eval_CAP.sh 1 test1k
 USAGE
   exit 0
 fi
@@ -40,6 +47,7 @@ elif [ "$#" -gt 2 ]; then
   EXTRA_ARGS=("${@:3}")
 fi
 
+echo "[eval_CAP] physical_gpu=${GPU_ID} CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "[eval_CAP] sample=${SAMPLE} split=${SPLIT} extra_args=${EXTRA_ARGS[*]:-<from config>}"
 
 python "${PROJECT_ROOT}/evaluate.py" \
