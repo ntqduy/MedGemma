@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-CHOICE_LETTERS = ("A", "B", "C", "D", "E")
+CHOICE_LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 
 @dataclass
@@ -492,6 +492,14 @@ def load_vqa_samples(
                 value = str(row.get(column, "")).strip()
                 if value:
                     choices[letter] = value
+        for column_name, raw_value in row.items():
+            match = re.match(r"^\s*(?:choice|option)\s+(.+?)\s*$", str(column_name), flags=re.IGNORECASE)
+            if not match:
+                continue
+            label = match.group(1).strip().upper()
+            value = str(raw_value or "").strip()
+            if label and value and label not in choices:
+                choices[label] = value
         question_type = normalize_question_type(question_type_raw, choices, answer)
         if question_type in {"yes_no", "open"}:
             choices = {}
@@ -830,8 +838,10 @@ def vqa_question_block(sample: EvalSample) -> str:
     if choices and question_type not in {"yes_no", "open"}:
         lines.append(choices)
         labels = ", ".join(letter for letter in sample.choices)
-        lines.append(f"You must choose exactly one option label from: {labels}.")
-        lines.append("Output only the option label, for example: A")
+        choice_values = "; ".join(str(value) for value in sample.choices.values())
+        lines.append(f"You must choose exactly one option label from the input options: {labels}.")
+        lines.append(f"Valid answer texts are only: {choice_values}.")
+        lines.append("Output only one option label, for example: A")
         lines.append("Do not describe the image. Do not explain.")
     elif question_type == "yes_no" or normalize_answer(sample.ground_truth) in {"yes", "no"}:
         lines.append("Return only yes or no. Do not explain.")
@@ -1519,10 +1529,58 @@ def normalize_answer(text: str) -> str:
     return " ".join(text.split())
 
 
+def choice_match_tokens(text: str) -> List[str]:
+    tokens = normalize_answer(text).split()
+    normalized = []
+    for token in tokens:
+        if len(token) > 3 and token.endswith("ies"):
+            token = token[:-3] + "y"
+        elif len(token) > 4 and re.search(r"(ses|xes|zes|ches|shes)$", token):
+            token = token[:-2]
+        elif len(token) > 3 and token.endswith("s"):
+            token = token[:-1]
+        normalized.append(token)
+    return normalized
+
+
 def exact_normalize(text: str) -> str:
     text = str(text).lower().strip()
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def choice_label_regex(choices: Dict[str, str]) -> str:
+    labels = sorted((re.escape(str(label)) for label in choices), key=len, reverse=True)
+    return "|".join(labels) or r"[A-Z]"
+
+
+def choice_token_score(prediction: str, choice_text: str) -> float:
+    text_tokens = choice_match_tokens(prediction)
+    choice_tokens = choice_match_tokens(choice_text)
+    if not text_tokens or not choice_tokens:
+        return 0.0
+    overlap = sum((Counter(text_tokens) & Counter(choice_tokens)).values())
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(text_tokens)
+    recall = overlap / len(choice_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def best_choice_label(prediction: str, choices: Dict[str, str]) -> Tuple[Optional[str], float, bool]:
+    best_label = None
+    best_score = 0.0
+    second_score = 0.0
+    for label, choice_text in choices.items():
+        score = choice_token_score(prediction, choice_text)
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_label = label
+        elif score > second_score:
+            second_score = score
+    ambiguous = best_label is not None and best_score > 0.0 and best_score < second_score + 0.05
+    return best_label, best_score, ambiguous
 
 
 def extract_choice_label(prediction: str, choices: Dict[str, str]) -> Optional[str]:
@@ -1533,14 +1591,15 @@ def extract_choice_label(prediction: str, choices: Dict[str, str]) -> Optional[s
     if short in choices:
         return short
 
+    label_pattern = choice_label_regex(choices)
     patterns = [
-        r"\\boxed\s*\{?\s*([A-Ea-e])\s*\}?",
-        r"(?:final\s+answer|answer|option|choice)\s*(?:is|:)?[^A-Ea-e]{0,40}\b([A-Ea-e])\b",
-        r"^\s*(?:answer\s*[:\-]?\s*)?\(?([A-Ea-e])\)?(?:[\.\):\s]|$)",
-        r"\b([A-Ea-e])\s*[\.\)]\s*[A-Za-z0-9]",
+        rf"\\boxed\s*\{{?\s*({label_pattern})\s*\}}?",
+        rf"(?:final\s+answer|answer|option|choice)\s*(?:is|:)?[^A-Za-z0-9]{{0,40}}\b({label_pattern})\b",
+        rf"^\s*(?:answer\s*[:\-]?\s*)?\(?({label_pattern})\)?(?:[\.\):\s]|$)",
+        rf"\b({label_pattern})\s*[\.\)]\s*[A-Za-z0-9]",
     ]
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             letter = match.group(1).upper()
             if letter in choices:
@@ -1551,51 +1610,36 @@ def extract_choice_label(prediction: str, choices: Dict[str, str]) -> Optional[s
         normalized_choice = normalize_answer(choice_text)
         if normalized_text == normalized_choice:
             return letter
-        if normalized_choice and normalized_choice in normalized_text:
+        if normalized_choice and len(normalized_choice.split()) == 1 and re.search(rf"\b{re.escape(normalized_choice)}\b", normalized_text):
             return letter
 
-    text_tokens = normalize_answer(text).split()
-    best_letter = None
-    best_score = 0.0
-    second_score = 0.0
-    for letter, choice_text in choices.items():
-        choice_tokens = normalize_answer(choice_text).split()
-        if not text_tokens or not choice_tokens:
-            continue
-        overlap = sum((Counter(text_tokens) & Counter(choice_tokens)).values())
-        if overlap == 0:
-            score = 0.0
-        else:
-            precision = overlap / len(text_tokens)
-            recall = overlap / len(choice_tokens)
-            score = 2 * precision * recall / (precision + recall)
-        if score > best_score:
-            second_score = best_score
-            best_score = score
-            best_letter = letter
-        elif score > second_score:
-            second_score = score
-    if best_letter and best_score >= 0.45 and best_score >= second_score + 0.15:
+    best_letter, best_score, ambiguous = best_choice_label(text, choices)
+    if best_letter and best_score >= 0.30 and not ambiguous:
         return best_letter
     return None
+
+
+def force_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> Tuple[str, Optional[str], bool, float]:
+    label = extract_choice_label(prediction, choices)
+    if label:
+        return choices[label], label, False, 1.0
+
+    best_label, best_score, ambiguous = best_choice_label(prediction, choices)
+    if best_label:
+        return choices[best_label], best_label, True, best_score
+
+    first_label = next(iter(choices), None)
+    if first_label is None:
+        return "UNMAPPED", None, True, 0.0
+    return choices[first_label], first_label, True, 0.0
 
 
 def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
     text = clean_generated_text(prediction)
     if not choices:
         return text
-    label = extract_choice_label(text, choices)
-    if label:
-        return choices[label]
-
-    normalized_text = normalize_answer(text)
-    for letter, choice_text in choices.items():
-        normalized_choice = normalize_answer(choice_text)
-        if normalized_text == normalized_choice:
-            return choice_text
-        if normalized_choice and normalized_choice in normalized_text:
-            return choice_text
-    return "UNMAPPED"
+    mapped, _, _, _ = force_prediction_to_choice(text, choices)
+    return mapped
 
 
 def map_prediction_to_yes_no(prediction: str) -> str:
@@ -1793,8 +1837,12 @@ def preview_text(row: Dict[str, Any], task: str) -> str:
         lines.append(f"Slice indices: {slice_indices}")
     if task == "vqa" and row.get("question"):
         lines.extend(["[QUESTION]", str(row.get("question", ""))])
+        if row.get("answer_choice"):
+            lines.append(f"Ground-truth option: {row.get('answer_choice')}")
         if row.get("predicted_choice_label"):
             lines.append(f"Predicted option: {row.get('predicted_choice_label')}")
+        if row.get("prediction_was_forced_to_choice"):
+            lines.append(f"Forced to input option: True (score={row.get('choice_match_score')})")
     lines.extend(["[PR]", str(row.get("prediction", "")), "[GT]", str(row.get("ground_truth", ""))])
     if task == "vqa":
         correct = row.get("correct")
@@ -1954,15 +2002,25 @@ def evaluate_loop(
                     base_row["split"] = sample.split
                 else:
                     if sample.choices:
-                        prediction_answer = map_prediction_to_choice(raw_prediction, sample.choices)
+                        prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
+                            raw_prediction, sample.choices
+                        )
                     elif normalize_answer(sample.ground_truth) in {"yes", "no"}:
                         prediction_answer = map_prediction_to_yes_no(raw_prediction)
+                        predicted_choice_label = None
+                        forced_choice = False
+                        choice_match_score = None
                     else:
                         prediction_answer = clean_generated_text(raw_prediction)
+                        predicted_choice_label = None
+                        forced_choice = False
+                        choice_match_score = None
                     base_row["raw_prediction"] = raw_prediction
                     base_row["prediction"] = prediction_answer
                     if sample.choices:
-                        base_row["predicted_choice_label"] = extract_choice_label(raw_prediction, sample.choices)
+                        base_row["predicted_choice_label"] = predicted_choice_label
+                        base_row["prediction_was_forced_to_choice"] = forced_choice
+                        base_row["choice_match_score"] = choice_match_score
                     normalized_prediction = normalize_answer(prediction_answer)
                     normalized_ground_truth = normalize_answer(sample.ground_truth)
                     exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
