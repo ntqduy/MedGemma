@@ -19,6 +19,7 @@ prompt_template: "<start_of_image> Answer the medical visual question concisely.
 
 columns:
   image: Image Path
+  question_type: Question Type
   question: Question
   answer: Answer
   answer_choice: Answer Choice

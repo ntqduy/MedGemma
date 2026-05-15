@@ -418,6 +418,7 @@ def detect_vqa_schema(fieldnames: Sequence[str], config: Dict[str, Any]) -> Dict
         "id": configured.get("id") or detect_field(fieldnames, ("id", "sample_id", "uid", "image_id")),
         "image": configured.get("image") or detect_field(fieldnames, ("Image Path", "image", "image_path", "path", "file")),
         "question": configured.get("question") or detect_field(fieldnames, ("Question", "question", "query", "prompt")),
+        "question_type": configured.get("question_type") or detect_field(fieldnames, ("Question Type", "question_type", "type")),
         "answer": configured.get("answer") or detect_field(fieldnames, ("Answer", "answer", "gt_answer", "ground_truth")),
         "answer_choice": configured.get("answer_choice") or detect_field(fieldnames, ("Answer Choice", "answer_choice", "label")),
     }
@@ -438,6 +439,18 @@ def render_choices(choices: Dict[str, str]) -> str:
 def build_vqa_prompt(prompt_template: str, question: str, choices: Dict[str, str]) -> str:
     choices_text = render_choices(choices)
     return prompt_template.format(question=question, choices=choices_text, answer_options=choices_text).strip()
+
+
+def normalize_question_type(value: str, choices: Dict[str, str], answer: str) -> str:
+    raw = normalize_answer(value)
+    answer_norm = normalize_answer(answer)
+    if "yes" in raw or "no" in raw or "binary" in raw or answer_norm in {"yes", "no"}:
+        return "yes_no"
+    if "open" in raw or "free" in raw:
+        return "open"
+    if "choice" in raw or "closed" in raw or "option" in raw or choices:
+        return "multiple_choice"
+    return "open"
 
 
 def load_vqa_samples(
@@ -469,6 +482,7 @@ def load_vqa_samples(
         image_value = str(row.get(schema["image"] or "", "")).strip()
         image_path = resolve_relative_existing(image_value, roots)
         question = str(row.get(schema["question"] or "", "")).strip()
+        question_type_raw = str(row.get(schema["question_type"] or "", "")).strip() if schema.get("question_type") else ""
         answer = str(row.get(schema["answer"] or "", "")).strip()
         answer_choice = str(row.get(schema["answer_choice"] or "", "")).strip() if schema.get("answer_choice") else ""
         choices = {}
@@ -478,6 +492,10 @@ def load_vqa_samples(
                 value = str(row.get(column, "")).strip()
                 if value:
                     choices[letter] = value
+        question_type = normalize_question_type(question_type_raw, choices, answer)
+        if question_type in {"yes_no", "open"}:
+            choices = {}
+            answer_choice = ""
         if not answer and answer_choice in choices:
             answer = choices[answer_choice]
         raw_id = row.get(schema["id"]) if schema.get("id") else None
@@ -491,7 +509,7 @@ def load_vqa_samples(
                 question=question,
                 choices=choices,
                 answer_choice=answer_choice,
-                meta={"raw_image": image_value, "row_index": index},
+                meta={"raw_image": image_value, "row_index": index, "question_type": question_type},
             )
         )
 
@@ -808,11 +826,17 @@ def with_image_token(prompt: str) -> str:
 def vqa_question_block(sample: EvalSample) -> str:
     lines = [f"Question: {sample.question}"]
     choices = render_choices(sample.choices)
-    if choices:
+    question_type = str(sample.meta.get("question_type", "")).strip().lower()
+    if choices and question_type not in {"yes_no", "open"}:
         lines.append(choices)
-        lines.append("Return only the final option label. Do not explain.")
+        labels = ", ".join(letter for letter in sample.choices)
+        lines.append(f"You must choose exactly one option label from: {labels}.")
+        lines.append("Output only the option label, for example: A")
+        lines.append("Do not describe the image. Do not explain.")
+    elif question_type == "yes_no" or normalize_answer(sample.ground_truth) in {"yes", "no"}:
+        lines.append("Return only yes or no. Do not explain.")
     else:
-        lines.append("Answer concisely.")
+        lines.append("Answer concisely using only visible findings.")
     return "\n".join(lines)
 
 
@@ -1529,6 +1553,30 @@ def extract_choice_label(prediction: str, choices: Dict[str, str]) -> Optional[s
             return letter
         if normalized_choice and normalized_choice in normalized_text:
             return letter
+
+    text_tokens = normalize_answer(text).split()
+    best_letter = None
+    best_score = 0.0
+    second_score = 0.0
+    for letter, choice_text in choices.items():
+        choice_tokens = normalize_answer(choice_text).split()
+        if not text_tokens or not choice_tokens:
+            continue
+        overlap = sum((Counter(text_tokens) & Counter(choice_tokens)).values())
+        if overlap == 0:
+            score = 0.0
+        else:
+            precision = overlap / len(text_tokens)
+            recall = overlap / len(choice_tokens)
+            score = 2 * precision * recall / (precision + recall)
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_letter = letter
+        elif score > second_score:
+            second_score = score
+    if best_letter and best_score >= 0.45 and best_score >= second_score + 0.15:
+        return best_letter
     return None
 
 
@@ -1547,7 +1595,7 @@ def map_prediction_to_choice(prediction: str, choices: Dict[str, str]) -> str:
             return choice_text
         if normalized_choice and normalized_choice in normalized_text:
             return choice_text
-    return text
+    return "UNMAPPED"
 
 
 def map_prediction_to_yes_no(prediction: str) -> str:
@@ -1557,7 +1605,7 @@ def map_prediction_to_yes_no(prediction: str) -> str:
         return "no"
     if re.search(r"\byes\b", normalized):
         return "yes"
-    return text
+    return "UNMAPPED"
 
 
 def token_f1(prediction: str, ground_truth: str) -> float:
@@ -1735,19 +1783,26 @@ def build_benchmark(
 
 
 def preview_text(row: Dict[str, Any], task: str) -> str:
-    lines = ["=" * 50, f"SAMPLE_ID: {row.get('sample_id')}"]
+    lines = ["[SAMPLE]", f"ID: {row.get('sample_id')}"]
     if row.get("requested_num_slices") is not None:
-        lines.append(f"REQUESTED_NUM_SLICES: {row.get('requested_num_slices')}")
+        lines.append(f"Requested slices: {row.get('requested_num_slices')}")
     if row.get("num_slices") is not None:
-        lines.append(f"ACTUAL_NUM_SLICES: {row.get('num_slices')}")
+        lines.append(f"Actual slices: {row.get('num_slices')}")
     slice_indices = row.get("selected_slice_indices") or row.get("slice_indices")
     if slice_indices is not None:
-        lines.append(f"SLICE_INDICES: {slice_indices}")
-    lines.extend(["PROMPT:", str(row.get("prompt", ""))])
-    lines.extend(["", "PRED:", str(row.get("prediction", "")), "", "GT:", str(row.get("ground_truth", ""))])
+        lines.append(f"Slice indices: {slice_indices}")
+    if task == "vqa" and row.get("question"):
+        lines.extend(["[QUESTION]", str(row.get("question", ""))])
+        if row.get("predicted_choice_label"):
+            lines.append(f"Predicted option: {row.get('predicted_choice_label')}")
+    lines.extend(["[PR]", str(row.get("prediction", "")), "[GT]", str(row.get("ground_truth", ""))])
     if task == "vqa":
-        lines.extend(["", f"CORRECT: {str(bool(row.get('correct', False))).lower()}"])
-    lines.append("=" * 50)
+        correct = row.get("correct")
+        value = "N/A" if correct is None else str(bool(correct))
+        lines.extend(["[True/False]", value])
+    if task == "cap":
+        lines.append("[METRIC]")
+        lines.append("See final Metric summary for BLEU-1/2/3/4, ROUGE-1/2/L, and BERTScore.")
     return "\n".join(lines)
 
 
@@ -1915,6 +1970,7 @@ def evaluate_loop(
                     base_row.update(
                         {
                             "question": sample.question,
+                            "question_type": sample.meta.get("question_type"),
                             "choices": sample.choices,
                             "answer_choice": sample.answer_choice,
                             "normalized_prediction": normalized_prediction,
@@ -1987,7 +2043,7 @@ def log_accuracy_row(
 
 def log_metric_summary(metrics: Dict[str, Any], logger: logging.Logger) -> None:
     task = str(metrics.get("task") or "").lower()
-    logger.info("Metric summary (%s)", task.upper() if task else "UNKNOWN")
+    logger.info("[METRIC] %s", task.upper() if task else "UNKNOWN")
 
     logger.info("Samples:")
     log_summary_row(logger, "successful", metrics.get("num_successful_samples"))
