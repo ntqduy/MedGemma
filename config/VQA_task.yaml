@@ -1,6 +1,6 @@
 task_name: visual_question_answering
 task: vqa
-vqa_eval_mode: open
+vqa_eval_mode: closed
 
 dataset_path: ../M3D-VQA/M3D_VQA/M3D_VQA_test5k.csv
 image_root: ../M3D-Cap
@@ -18,7 +18,12 @@ dtype: bfloat16
 local_files_only: true
 trust_remote_code: true
 
-prompt_template: "<start_of_image> Answer the medical visual question concisely.\nQuestion: {question}\n{choices}\nAnswer:"
+prompt_template: null
+prompt_templates:
+  # Med3DVLM-style open VQA: image token plus the raw question only.
+  open: "<start_of_image> {question}"
+  # Med3DVLM-style closed VQA: append answer choices inline after the question.
+  closed: "<start_of_image> {question} {choices_inline}"
 
 columns:
   image: Image Path
@@ -118,7 +123,9 @@ fine_tuning:
 metrics:
   export_med3dvlm_csv: true
   export_med3dvlm_metrics: false
-  vqa_open_eval_style: legacy
+  # Match Med3DVLM open VQA row metrics: evaluate BLEU(max_order=1), ROUGE-1,
+  # METEOR, and BERTScore per sample, then average by question type.
+  vqa_open_eval_style: med3dvlm
   export_extra_metrics_file: true
   legacy_row_bertscore: true
   group_metrics: true

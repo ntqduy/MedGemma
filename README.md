@@ -3,7 +3,7 @@
 This project evaluates and fine-tunes MedGemma on local medical image datasets:
 
 - Captioning: `M3D-Cap/M3D_Cap/M3D_Cap.json`
-- VQA: `M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv`
+- VQA: `M3D-VQA/M3D_VQA/M3D_VQA_test5k.csv`
 
 The default configs use the instruction-tuned model at:
 
@@ -60,7 +60,7 @@ The default config paths are relative to this project directory:
 
 ```text
 ../M3D-Cap/M3D_Cap/M3D_Cap.json
-../M3D-VQA/M3D-VQA/M3D_VQA_test5k.csv
+../M3D-VQA/M3D_VQA/M3D_VQA_test5k.csv
 ../M3D-Cap
 ```
 
@@ -100,30 +100,75 @@ bash scripts/eval_CAP.sh 100 test1k
 VQA:
 
 ```bash
+# Use the mode in config/VQA_task.yaml.
 bash scripts/eval/eval_vqa.sh 100
-bash scripts/eval/eval_vqa.sh 100 open
-bash scripts/eval/eval_vqa.sh 100 closed
-bash scripts/eval/eval_vqa_open.sh 100
-bash scripts/eval/eval_vqa_closed.sh 100
 bash scripts/eval/eval_vqa.sh full
+
+# Open-ended VQA: hide Choice A-D and compare generated text with Answer.
+bash scripts/eval/eval_vqa.sh 100 open
 bash scripts/eval/eval_vqa.sh full open
+bash scripts/eval/eval_vqa_open.sh 100
+
+# Closed-ended VQA: show Choice A-D and score mapped option/text accuracy.
+bash scripts/eval/eval_vqa.sh 100 closed
 bash scripts/eval/eval_vqa.sh full closed
+bash scripts/eval/eval_vqa_closed.sh 100
+
+# Override slice settings from the shell.
 bash scripts/eval/eval_vqa.sh 100 16 axial montage center_uniform
+bash scripts/eval/eval_vqa.sh 100 open 16 axial montage center_uniform
+bash scripts/eval/eval_vqa.sh 100 closed 16 axial montage center_uniform
 
 # Backward-compatible wrapper:
 bash scripts/eval_VQA.sh 100
 ```
 
 `open` and `closed` are evaluation modes, not separate labels in the CSV. The
-`full` command runs a single mode (from `config/VQA_task.yaml`) unless you
-explicitly pass `open` or `closed`.
-The
-M3D-VQA rows include `Question`, `Choice A-D`, `Answer`, and `Answer Choice`.
-In open mode the evaluator hides choices and asks the model to generate the
-answer text, then compares it with `Answer`. In closed mode the evaluator shows
-the choices, maps the model output back to an option/text answer, and computes
-choice accuracy. The Med3DVLM-compatible alias `--close_ended` also selects
-closed mode.
+current default in `config/VQA_task.yaml` is:
+
+```yaml
+vqa_eval_mode: closed
+```
+
+Therefore `bash scripts/eval/eval_vqa.sh full` runs one closed-ended VQA job
+only. To evaluate both protocols, run two commands:
+
+```bash
+bash scripts/eval/eval_vqa_open.sh full
+bash scripts/eval/eval_vqa_closed.sh full
+```
+
+The M3D-VQA rows include `Question`, `Choice A-D`, `Answer`, and
+`Answer Choice`. In open mode the evaluator hides choices and asks the model to
+generate answer text, then compares it with `Answer`. In closed mode the
+evaluator shows the choices, maps the raw model output back to an option/text
+answer, and computes closed Q&A accuracy. The Med3DVLM-compatible alias
+`--close_ended` also selects closed mode; `--open_ended` selects open mode.
+Open VQA follows the Med3DVLM prompt/eval convention: the base prompt is
+`<start_of_image> {question}` with no choices and no `Answer:` cue, and row
+metrics use `evaluate` BLEU with `max_order=1`, ROUGE-1, METEOR, and BERTScore
+before averaging by question type. Closed VQA uses
+`<start_of_image> {question} {choices_inline}`.
+
+Direct VQA CLI equivalents:
+
+```bash
+python src/eval/eval_vqa.py --sample 100 --vqa-mode open
+python src/eval/eval_vqa.py --sample 100 --vqa-mode closed
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 100 --open_ended
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 100 --close_ended
+```
+
+VQA output folders are mode-specific by default:
+
+```text
+results/EVAL_VQA_open_<sample>_<slice-settings>/
+results/EVAL_VQA_closed_<sample>_<slice-settings>/
+```
+
+Each run writes `log.txt` and image-path preflight logs. If a VQA CSV row points
+to an image missing under `image_root`, the log reports how many image files
+were found and prints example missing paths before inference starts.
 
 Multi-GPU:
 
@@ -202,9 +247,12 @@ python main.py eval --config config/VQA_task.yaml --task vqa --sample 100
 Each run writes the Med3DVLM-style CSV (`*_eval_caption.csv`,
 `*_eval_close_vqa.csv`, `*_eval_open_vqa.csv`, or `*_eval_vqa.csv`) plus
 MedGemma-specific outputs: `predictions.jsonl`, `predict.jsonl`, `predict.csv`,
-`metrics.json`, `metrics_extra.json`, `metrics_by_group.json`, `benchmark.json`,
-`run_config.yaml`, `log.txt`, `errors.jsonl`, and preview files under
-`results/EVAL_*`. Captioning additionally writes
+`predict_debug.txt`, `metrics.json`, `metrics_extra.json`,
+`metrics_by_group.json`, `benchmark.json`, `run_config.yaml`, `log.txt`,
+`errors.jsonl`, and preview files under `results/EVAL_*`. For debugging, VQA
+`predict.csv` starts with `id_sample`, `PR`, `GT`, and `raw_PR`, while
+`predict_debug.txt` prints one sample per separator block. Captioning
+additionally writes
 `*_eval_caption_report_table.csv` with `Method`, `BLEU`, `ROUGE`, `METEOR`,
 `BERTScore`, `Parameters`, and `Flops`. For VQA, `metrics_by_group.json` splits scores into
 `total`, `closed`, `yes_no`, and `open`. VQA also writes a question-type
@@ -317,6 +365,8 @@ Validate config and dataset paths without loading the model:
 
 ```bash
 python evaluate_cli.py --config config/CAP_task.yaml --task cap --sample 5 --split test1k --dry-run
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 5 --vqa-mode open --dry-run
+python evaluate_cli.py --config config/VQA_task.yaml --task vqa --sample 5 --vqa-mode closed --dry-run
 python train.py --config config/CAP_task.yaml --task cap --sample 5 --train-mode lora --split train --dry-run
 ```
 

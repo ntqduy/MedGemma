@@ -29,6 +29,9 @@ Examples:
 GPU:
   Default: use cuda_visible_devices from config/VQA_task.yaml.
   Override: CUDA_DEVICE_IDS=0,1 bash scripts/eval/eval_vqa.sh 100
+
+Mode:
+  If open/closed is omitted, this script uses config/VQA_task.yaml vqa_eval_mode.
 USAGE
   exit 0
 fi

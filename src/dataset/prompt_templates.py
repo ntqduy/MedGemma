@@ -7,12 +7,11 @@ MedGemma's 2D image-text processor.
 
 CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
 
-VQA_PROMPT_TEMPLATE = (
-    "<start_of_image> Answer the medical visual question concisely.\n"
-    "Question: {question}\n"
-    "{choices}\n"
-    "Answer:"
-)
+VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image> {question}"
+
+VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image> {question} {choices_inline}"
+
+VQA_PROMPT_TEMPLATE = VQA_CLOSED_PROMPT_TEMPLATE
 
 Caption_templates = [
     "Can you provide a caption consists of findings for this medical image?",
@@ -60,4 +59,3 @@ VQA_templates = [
     "Answer based only on the visible medical image.",
     "Use the image evidence to answer the question.",
 ]
-

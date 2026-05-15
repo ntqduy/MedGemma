@@ -18,6 +18,8 @@ peft>=0.11.0
 bitsandbytes>=0.43.0; platform_system != "Windows"
 
 # Optional evaluation metrics used when enabled in config/*.yaml
+evaluate>=0.4.2
+rouge-score>=0.1.2
 nltk>=3.8.1
 bert-score>=0.3.13
 pycocoevalcap>=1.2

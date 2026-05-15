@@ -43,15 +43,11 @@ VQA_QUESTION_TYPE_NAMES = {
 VQA_EVAL_MODES = {"open", "closed"}
 
 try:
-    from src.dataset.prompt_templates import CAPTION_PROMPT_TEMPLATE, VQA_PROMPT_TEMPLATE
+    from src.dataset.prompt_templates import CAPTION_PROMPT_TEMPLATE, VQA_CLOSED_PROMPT_TEMPLATE, VQA_OPEN_PROMPT_TEMPLATE
 except Exception:
     CAPTION_PROMPT_TEMPLATE = "<start_of_image> findings:"
-    VQA_PROMPT_TEMPLATE = (
-        "<start_of_image> Answer the medical visual question concisely.\n"
-        "Question: {question}\n"
-        "{choices}\n"
-        "Answer:"
-    )
+    VQA_OPEN_PROMPT_TEMPLATE = "<start_of_image> {question}"
+    VQA_CLOSED_PROMPT_TEMPLATE = "<start_of_image> {question} {choices_inline}"
 
 
 @dataclass
@@ -220,6 +216,8 @@ def get_package_availability() -> Dict[str, bool]:
         "nibabel": package_available("nibabel"),
         "torch": package_available("torch"),
         "transformers": package_available("transformers"),
+        "evaluate": package_available("evaluate"),
+        "rouge_score": package_available("rouge_score"),
         "nltk": package_available("nltk"),
         "bert_score": package_available("bert_score"),
         "pycocoevalcap": package_available("pycocoevalcap"),
@@ -471,9 +469,42 @@ def render_choices(choices: Dict[str, str]) -> str:
     return "Choices:\n" + "\n".join(lines)
 
 
+def render_choices_inline(choices: Dict[str, str]) -> str:
+    parts = [f"{letter}. {text}" for letter, text in choices.items() if text]
+    if not parts:
+        return ""
+    return "Choices: " + " ".join(parts)
+
+
+def select_vqa_prompt_template(config: Dict[str, Any], vqa_eval_mode: str) -> str:
+    prompt_templates = config.get("prompt_templates")
+    if isinstance(prompt_templates, dict):
+        mode_template = prompt_templates.get(vqa_eval_mode)
+        if mode_template is not None and str(mode_template).strip():
+            return str(mode_template)
+
+    mode_key = f"{vqa_eval_mode}_prompt_template"
+    if config.get(mode_key) is not None and str(config.get(mode_key)).strip():
+        return str(config.get(mode_key))
+
+    if config.get("prompt_template") is not None and str(config.get("prompt_template")).strip():
+        return str(config.get("prompt_template"))
+
+    if vqa_eval_mode == "open":
+        return VQA_OPEN_PROMPT_TEMPLATE
+    return VQA_CLOSED_PROMPT_TEMPLATE
+
+
 def build_vqa_prompt(prompt_template: str, question: str, choices: Dict[str, str]) -> str:
     choices_text = render_choices(choices)
-    return prompt_template.format(question=question, choices=choices_text, answer_options=choices_text).strip()
+    choices_inline = render_choices_inline(choices)
+    return prompt_template.format(
+        question=question,
+        choices=choices_text,
+        choices_inline=choices_inline,
+        answer_options=choices_text,
+        answer_options_inline=choices_inline,
+    ).strip()
 
 
 def normalize_question_type(value: str, choices: Dict[str, str], answer: str) -> str:
@@ -529,8 +560,8 @@ def load_vqa_samples(
         rows = list(reader)
 
     selected_rows = rows[:max_samples] if max_samples is not None else rows
-    prompt_template = str(config.get("prompt_template") or VQA_PROMPT_TEMPLATE)
     vqa_eval_mode = normalize_vqa_eval_mode(config.get("vqa_eval_mode", config.get("close_ended", "open")))
+    prompt_template = select_vqa_prompt_template(config, vqa_eval_mode)
     roots = [image_root, dataset_path.parent, dataset_path.parent.parent]
     samples: List[EvalSample] = []
 
@@ -561,10 +592,14 @@ def load_vqa_samples(
         answer_type = "closed" if choices else normalize_question_type("", choices, answer)
         if not answer and answer_choice in all_choices:
             answer = all_choices[answer_choice]
+        answer_with_choice = ""
         if choices and answer_choice:
-            answer = str(answer or "").strip()
-            if not re.match(rf"^{re.escape(answer_choice)}\s*\.", answer, flags=re.IGNORECASE):
-                answer = f"{answer_choice}. {answer}".strip()
+            answer_text = str(answer or "").strip()
+            answer_with_choice = (
+                answer_text
+                if re.match(rf"^{re.escape(answer_choice)}\s*\.", answer_text, flags=re.IGNORECASE)
+                else f"{answer_choice}. {answer_text}".strip()
+            )
         raw_id = row.get(schema["id"]) if schema.get("id") else None
         sample_id = str(raw_id or f"vqa_{index:06d}")
         samples.append(
@@ -585,6 +620,7 @@ def load_vqa_samples(
                     "answer_type": answer_type,
                     "vqa_eval_mode": vqa_eval_mode,
                     "all_choices": all_choices,
+                    "ground_truth_with_choice": answer_with_choice,
                 },
             )
         )
@@ -595,9 +631,58 @@ def load_vqa_samples(
         "total_rows": len(rows),
         "selected_rows": len(samples),
         "vqa_eval_mode": vqa_eval_mode,
+        "prompt_template": prompt_template,
     }
     logger.info("VQA schema: %s", json.dumps(schema_info, ensure_ascii=False))
     return samples, schema_info
+
+
+def log_sample_image_path_health(samples: Sequence[EvalSample], logger: logging.Logger, max_examples: int = 5) -> None:
+    if not samples:
+        logger.warning("Image path preflight: no samples were loaded.")
+        return
+
+    missing = [sample.image_path for sample in samples if not Path(sample.image_path).exists()]
+    existing_count = len(samples) - len(missing)
+    if not missing:
+        logger.info("Image path preflight: %d/%d image files found.", existing_count, len(samples))
+        return
+
+    logger.warning(
+        "Image path preflight: %d/%d image files found, %d missing.",
+        existing_count,
+        len(samples),
+        len(missing),
+    )
+    for image_path in missing[:max_examples]:
+        logger.warning("Missing image example: %s", image_path)
+
+
+def log_vqa_mode_constraints(samples: Sequence[EvalSample], logger: logging.Logger) -> None:
+    if not samples:
+        return
+
+    mode = str(samples[0].meta.get("vqa_eval_mode") or "").strip().lower()
+    samples_with_choices = sum(1 for sample in samples if bool(sample.choices))
+    prompts_with_choices = sum(1 for sample in samples if "Choices:" in sample.prompt)
+    prompts_with_answer_cue = sum(1 for sample in samples if "Answer:" in sample.prompt)
+    logger.info(
+        "VQA mode constraints: mode=%s samples=%d with_choices=%d prompts_with_choices=%d prompts_with_answer_cue=%d",
+        mode or "unknown",
+        len(samples),
+        samples_with_choices,
+        prompts_with_choices,
+        prompts_with_answer_cue,
+    )
+    if mode == "open":
+        if samples_with_choices or prompts_with_choices:
+            logger.warning("Open VQA constraint violation: choices must be hidden for all samples.")
+        if prompts_with_answer_cue:
+            logger.warning("Open VQA differs from Med3DVLM prompt: found 'Answer:' cue in %d prompt(s).", prompts_with_answer_cue)
+    elif mode == "closed":
+        missing_choices = len(samples) - samples_with_choices
+        if missing_choices:
+            logger.warning("Closed VQA constraint warning: %d/%d samples do not have answer choices.", missing_choices, len(samples))
 
 
 def choose_slice_axis(shape: Sequence[int], requested_axis: Any) -> int:
@@ -900,7 +985,13 @@ def with_image_token(prompt: str) -> str:
     return f"<start_of_image> {prompt}"
 
 
+def without_image_token(prompt: str) -> str:
+    return str(prompt).replace("<start_of_image>", "", 1).strip()
+
+
 def vqa_question_block(sample: EvalSample) -> str:
+    if sample.prompt:
+        return without_image_token(sample.prompt)
     lines = [f"Question: {sample.question}"]
     choices = render_choices(sample.choices)
     question_type = str(sample.meta.get("question_type", "")).strip().lower()
@@ -924,10 +1015,11 @@ def build_montage_prompt(
     num_slices: int,
 ) -> str:
     if task == "vqa":
+        prompt_body = vqa_question_block(sample)
         return with_image_token(
             f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
-            "medical volume, ordered from first to last slice. Answer based only on visible findings.\n"
-            f"{vqa_question_block(sample)}"
+            "medical volume, ordered from first to last slice.\n"
+            f"{prompt_body}"
         )
     return with_image_token(
         f"This image is a montage of {num_slices} {slice_config.view} slices sampled from a 3D "
@@ -950,8 +1042,9 @@ def build_independent_prompt(
         f"This is slice {ordinal + 1} of {num_slices}, selected by a fixed rule at slice index {slice_index}."
     )
     if task == "vqa":
+        prompt_body = vqa_question_block(sample)
         return with_image_token(
-            f"{prefix} Answer the question based only on visible findings.\n{vqa_question_block(sample)}"
+            f"{prefix}\n{prompt_body}"
         )
     return with_image_token(
         f"{prefix} Generate a concise radiology-style caption describing only visible imaging findings. "
@@ -2338,9 +2431,59 @@ def vqa_export_kind(rows: Sequence[Dict[str, Any]]) -> str:
     return "mixed"
 
 
-def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> None:
+def csv_cell_value(value: Any) -> Any:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return value
+
+
+def debug_text_value(value: Any) -> str:
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def write_predict_debug_text(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> Path:
+    output_path = output_dir / "predict_debug.txt"
+    debug_fields = [
+        ("id_sample", "sample_id"),
+        ("PR", "prediction"),
+        ("GT", "ground_truth"),
+        ("raw_PR", "raw_prediction"),
+        ("question", "question"),
+        ("choices", "choices"),
+        ("answer_choice", "answer_choice"),
+        ("predicted_choice", "predicted_choice_label"),
+        ("ground_truth_with_choice", "ground_truth_with_choice"),
+        ("correct", "correct"),
+        ("exact_match", "exact_match"),
+        ("token_f1", "token_f1"),
+        ("question_type", "question_type"),
+        ("question_type_name", "question_type_name"),
+        ("vqa_eval_mode", "vqa_eval_mode"),
+        ("image_path", "image_path"),
+    ]
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        for row in rows:
+            handle.write("-------------------------\n")
+            for label, key in debug_fields:
+                if key in row:
+                    handle.write(f"{label}: {debug_text_value(row.get(key))}\n")
+            handle.write("----------------------\n")
+    return output_path
+
+
+def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> List[Path]:
     predict_jsonl = output_dir / "predict.jsonl"
     slim_keys = [
+        "id_sample",
+        "PR",
+        "GT",
+        "raw_PR",
         "sample_id",
         "image_path",
         "question",
@@ -2351,9 +2494,16 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> N
         "prediction",
         "raw_prediction",
         "ground_truth",
+        "ground_truth_with_choice",
+        "answer_choice",
+        "predicted_choice_label",
+        "prediction_was_forced_to_choice",
+        "choice_match_score",
+        "letter_correct",
         "correct",
         "exact_match",
         "token_f1",
+        "choices",
         "view",
         "num_slices",
         "selected_slice_indices",
@@ -2362,11 +2512,21 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> N
     ]
     with predict_jsonl.open("w", encoding="utf-8") as handle:
         for row in rows:
-            payload = {key: row.get(key) for key in slim_keys if key in row}
+            payload = {
+                "id_sample": row.get("sample_id"),
+                "PR": row.get("prediction"),
+                "GT": row.get("ground_truth"),
+                "raw_PR": row.get("raw_prediction", row.get("prediction")),
+            }
+            payload.update({key: row.get(key) for key in slim_keys if key in row})
             append_jsonl(handle, payload)
 
     predict_csv = output_dir / "predict.csv"
     fieldnames = [
+        "id_sample",
+        "PR",
+        "GT",
+        "raw_PR",
         "sample_id",
         "image_path",
         "question",
@@ -2376,9 +2536,16 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> N
         "prediction",
         "raw_prediction",
         "ground_truth",
+        "ground_truth_with_choice",
+        "answer_choice",
+        "predicted_choice_label",
+        "prediction_was_forced_to_choice",
+        "choice_match_score",
+        "letter_correct",
         "correct",
         "exact_match",
         "token_f1",
+        "choices",
         "view",
         "num_slices",
         "selected_slice_indices",
@@ -2389,14 +2556,17 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> N
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(
-                {
-                    key: json.dumps(row.get(key), ensure_ascii=False)
-                    if isinstance(row.get(key), (list, dict))
-                    else row.get(key, "")
-                    for key in fieldnames
-                }
-            )
+            export_row = {
+                "id_sample": row.get("sample_id"),
+                "PR": row.get("prediction"),
+                "GT": row.get("ground_truth"),
+                "raw_PR": row.get("raw_prediction", row.get("prediction")),
+            }
+            export_row.update(row)
+            writer.writerow({key: csv_cell_value(export_row.get(key)) for key in fieldnames})
+
+    predict_debug = write_predict_debug_text(output_dir, rows)
+    return [predict_jsonl, predict_csv, predict_debug]
 
 
 def write_med3dvlm_caption_csv(
@@ -2900,8 +3070,8 @@ def write_eval_exports(
     model_name = model_output_name(config)
 
     if bool_setting(logging_config.get("save_predictions"), True):
-        write_predict_exports(output_dir, rows)
-        logger.info("Saved predict exports: %s and %s", output_dir / "predict.jsonl", output_dir / "predict.csv")
+        predict_paths = write_predict_exports(output_dir, rows)
+        logger.info("Saved predict exports: %s", ", ".join(str(path) for path in predict_paths))
 
     if bool(metrics.get("skip_metrics", False)):
         return
@@ -3183,25 +3353,24 @@ def evaluate_loop(
                     base_row["split"] = sample.split
                 else:
                     if sample.choices:
-                        prediction_answer = clean_generated_text(raw_prediction)
-                        predicted_choice_label = None
-                        forced_choice = False
-                        choice_match_score = None
+                        prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
+                            raw_prediction, sample.choices
+                        )
                         answer_choice = str(sample.answer_choice or "").strip()
-                        if answer_choice:
-                            exact_match = f"{answer_choice}." in raw_prediction
-                            correct = exact_match
-                        else:
-                            prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
-                                raw_prediction, sample.choices
-                            )
-                            exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
-                            correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
+                        letter_correct = bool(
+                            answer_choice
+                            and predicted_choice_label
+                            and predicted_choice_label.upper() == answer_choice.upper()
+                        )
+                        text_correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
+                        exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
+                        correct = bool(letter_correct or text_correct)
                     elif normalize_answer(sample.ground_truth) in {"yes", "no"}:
                         prediction_answer = map_prediction_to_yes_no(raw_prediction)
                         predicted_choice_label = None
                         forced_choice = False
                         choice_match_score = None
+                        letter_correct = None
                         exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
                         correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     else:
@@ -3209,6 +3378,7 @@ def evaluate_loop(
                         predicted_choice_label = None
                         forced_choice = False
                         choice_match_score = None
+                        letter_correct = None
                         exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
                         correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     base_row["raw_prediction"] = raw_prediction
@@ -3217,6 +3387,8 @@ def evaluate_loop(
                         base_row["predicted_choice_label"] = predicted_choice_label
                         base_row["prediction_was_forced_to_choice"] = forced_choice
                         base_row["choice_match_score"] = choice_match_score
+                        base_row["letter_correct"] = letter_correct
+                        base_row["ground_truth_with_choice"] = sample.meta.get("ground_truth_with_choice")
                     normalized_prediction = normalize_answer(prediction_answer)
                     normalized_ground_truth = normalize_answer(sample.ground_truth)
                     base_row.update(
@@ -3775,6 +3947,9 @@ def run(args: argparse.Namespace) -> int:
     else:
         samples, schema_info = load_vqa_samples(config, dataset_path, image_root, max_samples, logger)
     logger.info("Resolved sample count: %d", len(samples))
+    log_sample_image_path_health(samples, logger)
+    if task == "vqa":
+        log_vqa_mode_constraints(samples, logger)
 
     if should_run_parallel(config, args, samples):
         return run_parallel_eval(
