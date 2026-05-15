@@ -1643,6 +1643,15 @@ def evaluate_loop(
                     image_config=image_config,
                     output_dir=output_dir,
                 )
+                logger.info(
+                    "Slice selection | sample_id=%s | view=%s | num_slices=%d | strategy=%s | mode=%s | indices=%s",
+                    sample.sample_id,
+                    slice_config.view,
+                    len(slice_bundle.selected_slice_indices),
+                    slice_config.slice_strategy,
+                    slice_config.inference_mode,
+                    slice_bundle.selected_slice_indices,
+                )
 
                 per_slice_predictions: List[Dict[str, Any]] = []
                 if slice_config.inference_mode == "independent":
