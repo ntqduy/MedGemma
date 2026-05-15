@@ -763,14 +763,21 @@ def safe_filename(value: str) -> str:
     return cleaned or "sample"
 
 
+def with_image_token(prompt: str) -> str:
+    prompt = str(prompt).strip()
+    if "<start_of_image>" in prompt:
+        return prompt
+    return f"<start_of_image> {prompt}"
+
+
 def build_montage_prompt(task: str, sample: EvalSample, slice_config: SliceInferenceConfig) -> str:
     if task == "vqa":
-        return (
+        return with_image_token(
             f"This image is a montage of {slice_config.num_slices} {slice_config.view} slices from a 3D medical "
             f"volume, ordered from first to last slice. Answer the question based on all slices. "
             f"Question: {sample.question}"
         )
-    return (
+    return with_image_token(
         f"This image is a montage of {slice_config.num_slices} {slice_config.view} slices from a 3D medical "
         "volume, ordered from first to last slice. Generate a concise medical caption describing the main findings."
     )
@@ -788,8 +795,8 @@ def build_independent_prompt(
         f"from a 3D medical volume, selected by a fixed rule at slice index {slice_index}."
     )
     if task == "vqa":
-        return f"{prefix} Answer the question based on this slice. Question: {sample.question}"
-    return f"{prefix} Generate a concise medical caption describing the main findings in this slice."
+        return with_image_token(f"{prefix} Answer the question based on this slice. Question: {sample.question}")
+    return with_image_token(f"{prefix} Generate a concise medical caption describing the main findings in this slice.")
 
 
 def prepare_slice_images(
