@@ -123,9 +123,9 @@ fine_tuning:
 metrics:
   export_med3dvlm_csv: true
   export_med3dvlm_metrics: false
-  # Match Med3DVLM open VQA row metrics: evaluate BLEU(max_order=1), ROUGE-1,
-  # METEOR, and BERTScore per sample, then average by question type.
-  vqa_open_eval_style: med3dvlm
+  # Open VQA uses the internal text-metric pipeline, not Hugging Face evaluate:
+  # BLEU/ROUGE/METEOR/BERTScore are computed the same way as grouped text metrics.
+  vqa_open_eval_style: legacy
   export_extra_metrics_file: true
   legacy_row_bertscore: true
   group_metrics: true

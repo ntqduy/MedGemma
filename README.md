@@ -145,10 +145,10 @@ evaluator shows the choices, maps the raw model output back to an option/text
 answer, and computes closed Q&A accuracy. The Med3DVLM-compatible alias
 `--close_ended` also selects closed mode; `--open_ended` selects open mode.
 Open VQA follows the Med3DVLM prompt/eval convention: the base prompt is
-`<start_of_image> {question}` with no choices and no `Answer:` cue, and row
-metrics use `evaluate` BLEU with `max_order=1`, ROUGE-1, METEOR, and BERTScore
-before averaging by question type. Closed VQA uses
-`<start_of_image> {question} {choices_inline}`.
+`<start_of_image> {question}` with no choices and no `Answer:` cue. Its main
+scores are text metrics from the internal metric pipeline: BLEU, ROUGE, METEOR,
+and BERTScore, averaged by question type. Closed VQA uses
+`<start_of_image> {question} {choices_inline}` and reports choice accuracy.
 
 Direct VQA CLI equivalents:
 
@@ -251,7 +251,11 @@ MedGemma-specific outputs: `predictions.jsonl`, `predict.jsonl`, `predict.csv`,
 `metrics_by_group.json`, `benchmark.json`, `run_config.yaml`, `log.txt`,
 `errors.jsonl`, and preview files under `results/EVAL_*`. For debugging, VQA
 `predict.csv` starts with `id_sample`, `PR`, `GT`, and `raw_PR`, while
-`predict_debug.txt` prints one sample per separator block. Captioning
+`predict_debug.txt` prints one sample per separator block. In open VQA,
+`correct`/`exact_match` are exact-match debug fields only; use
+`*_eval_open_vqa.csv`, `*_eval_open_vqa_by_question_type.csv`, and
+`*_eval_open_vqa_question_type_table.csv` for BLEU/ROUGE/METEOR/BERTScore.
+Captioning
 additionally writes
 `*_eval_caption_report_table.csv` with `Method`, `BLEU`, `ROUGE`, `METEOR`,
 `BERTScore`, `Parameters`, and `Flops`. For VQA, `metrics_by_group.json` splits scores into

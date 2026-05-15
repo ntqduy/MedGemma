@@ -216,8 +216,6 @@ def get_package_availability() -> Dict[str, bool]:
         "nibabel": package_available("nibabel"),
         "torch": package_available("torch"),
         "transformers": package_available("transformers"),
-        "evaluate": package_available("evaluate"),
-        "rouge_score": package_available("rouge_score"),
         "nltk": package_available("nltk"),
         "bert_score": package_available("bert_score"),
         "pycocoevalcap": package_available("pycocoevalcap"),
@@ -1648,12 +1646,12 @@ def med3dvlm_eval_bundle(logger: logging.Logger) -> Optional[Dict[str, Any]]:
 
 
 def resolve_vqa_open_eval_style(metrics_config: Dict[str, Any]) -> str:
-    raw = str(metrics_config.get("vqa_open_eval_style", "med3dvlm")).strip().lower()
+    raw = str(metrics_config.get("vqa_open_eval_style", "legacy")).strip().lower()
     if raw in {"med3dvlm", "med3dvlm_style", "med3d"}:
         return "med3dvlm"
     if raw in {"legacy", "default", "medgemma"}:
         return "legacy"
-    return "med3dvlm"
+    return "legacy"
 
 
 def build_med3dvlm_bertscore_kwargs(
@@ -2449,30 +2447,58 @@ def debug_text_value(value: Any) -> str:
 
 def write_predict_debug_text(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> Path:
     output_path = output_dir / "predict_debug.txt"
-    debug_fields = [
-        ("id_sample", "sample_id"),
-        ("PR", "prediction"),
-        ("GT", "ground_truth"),
-        ("raw_PR", "raw_prediction"),
-        ("question", "question"),
-        ("choices", "choices"),
-        ("answer_choice", "answer_choice"),
-        ("predicted_choice", "predicted_choice_label"),
-        ("ground_truth_with_choice", "ground_truth_with_choice"),
-        ("correct", "correct"),
-        ("exact_match", "exact_match"),
-        ("token_f1", "token_f1"),
-        ("question_type", "question_type"),
-        ("question_type_name", "question_type_name"),
-        ("vqa_eval_mode", "vqa_eval_mode"),
-        ("image_path", "image_path"),
-    ]
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         for row in rows:
+            mode = str(row.get("vqa_eval_mode") or "").strip().lower()
+            raw_prediction = debug_text_value(row.get("raw_prediction", row.get("prediction")))
+            prediction = debug_text_value(row.get("prediction"))
             handle.write("-------------------------\n")
-            for label, key in debug_fields:
-                if key in row:
-                    handle.write(f"{label}: {debug_text_value(row.get(key))}\n")
+            handle.write("[id_sample]\n")
+            handle.write(f"{debug_text_value(row.get('sample_id'))}\n")
+            if row.get("question"):
+                handle.write("[QUESTION]\n")
+                handle.write(f"{debug_text_value(row.get('question'))}\n")
+            if row.get("answer_choice"):
+                option_label = "Ground-truth option"
+                if mode == "open":
+                    option_label += " (debug only; hidden from prompt)"
+                handle.write(f"{option_label}: {debug_text_value(row.get('answer_choice'))}\n")
+            if mode == "open" and row.get("all_choices"):
+                handle.write(f"Hidden choices (not shown to model): {debug_text_value(row.get('all_choices'))}\n")
+            elif row.get("choices"):
+                handle.write(f"Choices: {debug_text_value(row.get('choices'))}\n")
+            handle.write("[PR]\n")
+            handle.write(f"{prediction}\n")
+            if raw_prediction and raw_prediction != prediction:
+                handle.write("[RAW_PR]\n")
+                handle.write(f"{raw_prediction}\n")
+            handle.write("[GT]\n")
+            handle.write(f"{debug_text_value(row.get('ground_truth'))}\n")
+            if mode == "open":
+                handle.write("[TEXT_EXACT_MATCH_DEBUG]\n")
+                handle.write(f"{debug_text_value(row.get('exact_match'))}\n")
+                handle.write("[TOKEN_F1_DEBUG]\n")
+                handle.write(f"{debug_text_value(row.get('token_f1'))}\n")
+                handle.write("[SCORE_MODE]\n")
+                handle.write("open_text_metrics: use BLEU/ROUGE/METEOR/BERTScore CSV, not this exact-match debug flag.\n")
+            else:
+                handle.write("[True/False]\n")
+                handle.write(f"{debug_text_value(row.get('correct'))}\n")
+                if row.get("predicted_choice_label"):
+                    handle.write(f"Predicted option: {debug_text_value(row.get('predicted_choice_label'))}\n")
+            if row.get("question_type") or row.get("question_type_name"):
+                handle.write("[QUESTION_TYPE]\n")
+                handle.write(
+                    f"{debug_text_value(row.get('question_type'))} "
+                    f"{debug_text_value(row.get('question_type_name'))}".strip()
+                    + "\n"
+                )
+            if row.get("vqa_eval_mode"):
+                handle.write("[VQA_MODE]\n")
+                handle.write(f"{debug_text_value(row.get('vqa_eval_mode'))}\n")
+            if row.get("image_path"):
+                handle.write("[IMAGE_PATH]\n")
+                handle.write(f"{debug_text_value(row.get('image_path'))}\n")
             handle.write("----------------------\n")
     return output_path
 
@@ -2500,10 +2526,12 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> L
         "prediction_was_forced_to_choice",
         "choice_match_score",
         "letter_correct",
+        "score_mode",
         "correct",
         "exact_match",
         "token_f1",
         "choices",
+        "all_choices",
         "view",
         "num_slices",
         "selected_slice_indices",
@@ -2542,10 +2570,12 @@ def write_predict_exports(output_dir: Path, rows: Sequence[Dict[str, Any]]) -> L
         "prediction_was_forced_to_choice",
         "choice_match_score",
         "letter_correct",
+        "score_mode",
         "correct",
         "exact_match",
         "token_f1",
         "choices",
+        "all_choices",
         "view",
         "num_slices",
         "selected_slice_indices",
@@ -3353,6 +3383,7 @@ def evaluate_loop(
                     base_row["split"] = sample.split
                 else:
                     if sample.choices:
+                        score_mode = "closed_choice_accuracy"
                         prediction_answer, predicted_choice_label, forced_choice, choice_match_score = force_prediction_to_choice(
                             raw_prediction, sample.choices
                         )
@@ -3366,6 +3397,7 @@ def evaluate_loop(
                         exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
                         correct = bool(letter_correct or text_correct)
                     elif normalize_answer(sample.ground_truth) in {"yes", "no"}:
+                        score_mode = "yes_no_accuracy"
                         prediction_answer = map_prediction_to_yes_no(raw_prediction)
                         predicted_choice_label = None
                         forced_choice = False
@@ -3374,6 +3406,7 @@ def evaluate_loop(
                         exact_match = exact_normalize(prediction_answer) == exact_normalize(sample.ground_truth)
                         correct = normalize_answer(prediction_answer) == normalize_answer(sample.ground_truth)
                     else:
+                        score_mode = "open_text_metrics"
                         prediction_answer = clean_generated_text(raw_prediction)
                         predicted_choice_label = None
                         forced_choice = False
@@ -3401,6 +3434,7 @@ def evaluate_loop(
                             "choices": sample.choices,
                             "all_choices": sample.meta.get("all_choices"),
                             "answer_choice": sample.answer_choice,
+                            "score_mode": score_mode,
                             "normalized_prediction": normalized_prediction,
                             "normalized_ground_truth": normalized_ground_truth,
                             "correct": correct,
